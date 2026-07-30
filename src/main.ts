@@ -27,7 +27,8 @@ import {
   saveCurve,
   smooth,
 } from "./curve.ts";
-import { dims, migrateStored, type Params, schema, warnings } from "./params.ts";
+import { dims, effectiveWall, migrateStored, type Params, schema, warnings } from "./params.ts";
+import { applyOverhangColors, overhangBands, overhangWarnings } from "./overhang.ts";
 import {
   APP_VERSION,
   createLibrary,
@@ -110,6 +111,17 @@ const swapGeom = (mesh: Mesh, geom: BufferGeometry): void => {
   old.dispose();
 };
 
+// Heatmap recolour: writes the overhang colour attribute onto the CURRENT shade geometry. Called
+// wherever geometry lands while the overhang view is active — drafts included, which is what keeps
+// the heatmap live mid-drag. The attribute must exist BEFORE the material flips to vertexColors (a
+// vertex-colour material with no color attribute renders black), so the view-mode listener calls
+// this before lighting.setMode. The fitter is deliberately untinted: a flat plate on the bed has
+// no overhang to warn about.
+function recolorShade(): void {
+  if (viewModeSel.value !== "overhang") return;
+  applyOverhangColors(shade.geometry, { height: params.height, wall: effectiveWall(params) });
+}
+
 // --- rebuild -------------------------------------------------------------------------------------
 // Every rebuild runs in a worker (latest-wins: mid-drag requests are dropped, never queued), so the
 // main thread never blocks on a boolean. Each change asks for a DRAFT — form only, no perforation,
@@ -157,6 +169,7 @@ client.onResult((res) => {
 
   swapGeom(shade, creased(unpackGeometry(res.shade)));
   swapGeom(fitter, creased(unpackGeometry(res.fitter)));
+  recolorShade(); // drafts included — the heatmap stays live mid-drag
   // The fitter is BUILT flat on the bed (print orientation) and only lifted for display. Seat it so
   // its TOP face is level with the mount height, i.e. recessed into the opening rather than perched
   // on the rim like a lid.
@@ -208,7 +221,13 @@ function readout(d: ReturnType<typeof dims>): void {
     `bulb gap <strong>${d.bulbGap.toFixed(0)} mm</strong><br>${badges}` +
     `<br><span class="perf">${lastQuality} rebuild ${lastMs.toFixed(0)} ms</span>`;
 
-  const all = [...warnings(params, curve, d), ...fitterWarnings(params, curve)];
+  // Overhang lint is composed HERE rather than inside params.warnings(): shade.ts (which computes
+  // the surface) already imports params.ts, so routing it through params would close a cycle.
+  const all = [
+    ...warnings(params, curve, d),
+    ...fitterWarnings(params, curve),
+    ...overhangWarnings(params, curve),
+  ];
   $("warnings").innerHTML = all
     .map((w) => `<div class="${w.bad ? "bad" : ""}">${w.text}</div>`)
     .join("");
@@ -250,6 +269,13 @@ const curveEditor = installCurveEditor($<HTMLCanvasElement>("curve"), {
     saveCurve(curve);
   },
   onChange: scheduleRebuild,
+  bands: () =>
+    overhangBands(curve, {
+      height: params.height,
+      girth: params.girth,
+      waveCount: params.waveCount,
+      waveDepth: params.waveDepth,
+    }),
 });
 
 const familySelect = $<HTMLSelectElement>("family");
@@ -383,9 +409,10 @@ linkBtn.addEventListener("click", () => {
 refreshDesigns();
 
 // --- view controls (app chrome: deliberately not schema params) -----------------------------------
-const viewMode = $<HTMLSelectElement>("view-mode");
-viewMode.addEventListener("change", () => {
-  lighting.setMode(viewMode.value as ViewMode);
+const viewModeSel = $<HTMLSelectElement>("view-mode");
+viewModeSel.addEventListener("change", () => {
+  recolorShade(); // attribute before material: entering overhang mode must never render black
+  lighting.setMode(viewModeSel.value as ViewMode);
   viewer.invalidate();
 });
 
@@ -515,6 +542,7 @@ installAppHook({
     const d = dims(params, curve);
     swapGeom(shade, creased(buildShade(params, curve, PREVIEW)));
     swapGeom(fitter, creased(buildFitter(params, curve)));
+    recolorShade();
     setShadePerfPreview(shade, null); // a full build has real holes; drop any drag overlay
     fitter.position.set(0, 0, Math.max(0, d.fitterZ - params.fitterThickness));
     shadeCm3 = volumeCm3(shade.geometry);
@@ -525,7 +553,11 @@ installAppHook({
     viewer.invalidate();
   },
   dims: () => dims(params, curve),
-  warnings: () => [...warnings(params, curve), ...fitterWarnings(params, curve)],
+  warnings: () => [
+    ...warnings(params, curve),
+    ...fitterWarnings(params, curve),
+    ...overhangWarnings(params, curve),
+  ],
   library,
   shareUrl,
   applyDesign,

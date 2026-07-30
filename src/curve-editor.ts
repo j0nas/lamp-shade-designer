@@ -13,11 +13,15 @@ import {
   sampleRadius,
   setPoint,
 } from "./curve.ts";
+import type { OverhangBand } from "./overhang.ts";
 
 export type CurveEditorOpts = {
   get: () => CtrlPt[];
   set: (pts: CtrlPt[]) => void;
   onChange: () => void;
+  // Overhang lint bands, tinted onto the silhouette. Always drawn when provided — this is lint,
+  // like the warnings list, not something gated on the 3D view mode.
+  bands?: () => OverhangBand[];
 };
 
 export type CurveEditor = { draw: () => void; destroy: () => void };
@@ -127,6 +131,21 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
     ctx.closePath();
     ctx.fillStyle = `${accent}2e`;
     ctx.fill();
+
+    // Overhang bands: each flagged v-range fills the region between the two silhouette edges, so
+    // the tint is clipped to the lamp's own shape. Reuses the samples drawn above; band edges snap
+    // to the nearest sample, which at N = 96 is under 1% of the height.
+    for (const band of opts.bands?.() ?? []) {
+      const k0 = Math.max(0, Math.min(N, Math.round(band.v0 * N)));
+      const k1 = Math.max(k0, Math.min(N, Math.round(band.v1 * N)));
+      ctx.beginPath();
+      ctx.moveTo(right[k0][0], right[k0][1]);
+      for (let k = k0; k <= k1; k++) ctx.lineTo(right[k][0], right[k][1]);
+      for (let k = k1; k >= k0; k--) ctx.lineTo(g.cx - (right[k][0] - g.cx), right[k][1]);
+      ctx.closePath();
+      ctx.fillStyle = band.level === "bad" ? "rgba(224,90,90,0.28)" : "rgba(224,163,58,0.20)";
+      ctx.fill();
+    }
 
     ctx.strokeStyle = accent;
     ctx.lineWidth = 1.5;

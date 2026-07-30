@@ -56,9 +56,9 @@ function cutterSegments(shape: PerfShape, dia: number, cut: number): number {
 
 type Vec3 = [number, number, number];
 
-// The one place the axes combine. Everything downstream — mesh, normals, cutter placement — reads
-// the surface through this, so a new axis is added here once.
-function makeSurface(p: Params, curve: readonly CtrlPt[]) {
+// The one place the axes combine. Everything downstream — mesh, normals, cutter placement, the
+// overhang lint — reads the surface through this, so a new axis is added here once.
+export function makeSurface(p: Params, curve: readonly CtrlPt[]) {
   const section = makeSection(p.sectionKind, p.sides, p.sectionDepth);
   const twist = (p.twistDeg * Math.PI) / 180;
   const flutes = Math.round(p.fluteCount);
@@ -96,6 +96,50 @@ function makeSurface(p: Params, curve: readonly CtrlPt[]) {
   };
 
   return { radius, at, frame };
+}
+
+// Worst overhang-from-vertical anywhere on the modulated surface: asin(|n_z|) of the frame()
+// normals over a coarse grid. |n_z| rather than a signed test because a thin shell fails leaning
+// either way — an inward overhang sags exactly like an outward one. Rim rows are excluded: v = 0
+// and v = 1 sit on the annuli, whose normals are ±Z by construction and would always read 90°.
+//
+// Single-slot memo in the countHoles() pattern: the lint composition in main.ts runs per frame
+// during a drag, and the curve is compared by reference — every edit swaps the whole array, so
+// that is exact rather than approximate.
+let overhangMemo: { key: string; curve: readonly CtrlPt[]; deg: number } | null = null;
+
+export function maxOverhangDeg(
+  p: Params,
+  curve: readonly CtrlPt[],
+  samples = { u: 48, v: 32 },
+): number {
+  const key = [
+    p.height,
+    p.girth,
+    p.sectionKind,
+    p.sides,
+    p.sectionDepth,
+    p.twistDeg,
+    p.fluteCount,
+    p.fluteDepth,
+    p.waveCount,
+    p.waveDepth,
+    samples.u,
+    samples.v,
+  ].join("|");
+  if (overhangMemo && overhangMemo.key === key && overhangMemo.curve === curve) {
+    return overhangMemo.deg;
+  }
+  const surface = makeSurface(p, curve);
+  let worst = 0;
+  for (let j = 1; j < samples.v; j++) {
+    for (let i = 0; i < samples.u; i++) {
+      worst = Math.max(worst, Math.abs(surface.frame(i / samples.u, j / samples.v).n[2]));
+    }
+  }
+  const deg = (Math.asin(Math.min(1, worst)) * 180) / Math.PI;
+  overhangMemo = { key, curve, deg };
+  return deg;
 }
 
 function cross(a: Vec3, b: Vec3): Vec3 {

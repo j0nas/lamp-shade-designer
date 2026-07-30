@@ -1,8 +1,11 @@
-// Two ways to look at a shade, because a lamp has two truths.
+// Three ways to look at a shade, because a lamp has more than one truth.
 //
-// "cad"  — the kit's default studio lighting: read the FORM, crisp edges, neutral grey.
-// "lamp" — dark room, an emissive bulb at the real socket height inside the shade, shadows cast
-//          THROUGH the actual perforations onto a floor and back wall.
+// "cad"      — the kit's default studio lighting: read the FORM, crisp edges, neutral grey.
+// "lamp"     — dark room, an emissive bulb at the real socket height inside the shade, shadows
+//              cast THROUGH the actual perforations onto a floor and back wall.
+// "overhang" — the studio look with a printability heatmap as vertex colours: where the wall
+//              out-slopes what FDM can print unsupported. The colours themselves are computed in
+//              overhang.ts and written by main.ts; this module only flips the material.
 //
 // The lamp mode is the reason this app beats a CAD package for this particular object: you are
 // designing a light, and a grey solid tells you nothing about what it throws on a wall.
@@ -27,7 +30,11 @@ import {
 } from "three";
 import { BULBS, type Params } from "./params.ts";
 
-export type ViewMode = "cad" | "lamp";
+export type ViewMode = "cad" | "lamp" | "overhang";
+
+// The shade's base colour, shared with the overhang ramp's neutral stop so a safe surface in the
+// heatmap view looks exactly like the familiar shade.
+export const SHADE_COLOR = 0xf3ece0;
 
 export type Lighting = {
   setMode: (m: ViewMode) => void;
@@ -103,7 +110,7 @@ export function createLighting(scene: Scene): Lighting {
 
   // Shade material: physical so thin walls can actually transmit light the way printed PLA does.
   const shadeMaterial = new MeshPhysicalMaterial({
-    color: 0xf3ece0,
+    color: SHADE_COLOR,
     roughness: 0.72,
     metalness: 0,
     transmission: 0,
@@ -182,6 +189,19 @@ export function createLighting(scene: Scene): Lighting {
       shadeMaterial.transmission = 0;
       shadeMaterial.thickness = 2;
       shadeMaterial.emissiveIntensity = 0; // CAD mode reads form, not mood
+    }
+
+    // Overhang heatmap: vertex colours multiply the base colour, so the base flips to white while
+    // the ramp is on and back to the shade's own colour when it isn't. CHANGE-GUARDED because
+    // apply() runs on every param change, and vertexColors/needsUpdate recompile the shader — an
+    // unconditional toggle would recompile the program on every frame of a drag. The depth and
+    // distance materials are untouched: shadows don't care what colour the surface is, and the
+    // drag preview's alpha map is an orthogonal shader feature that keeps working here.
+    const overhang = mode === "overhang";
+    if (shadeMaterial.vertexColors !== overhang) {
+      shadeMaterial.vertexColors = overhang;
+      shadeMaterial.color.set(overhang ? 0xffffff : SHADE_COLOR);
+      shadeMaterial.needsUpdate = true;
     }
   }
 
