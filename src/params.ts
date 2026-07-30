@@ -6,7 +6,16 @@
 import { defineParams, num, pick, toggle, type Infer } from "parametric-kit/params";
 import { type CtrlPt, maxRadius, minRadius, sampleRadius } from "./curve.ts";
 import { SECTION_KINDS, SECTION_LABELS, sectionMin, type SectionKind } from "./section.ts";
-import { PERF_LABELS, PERF_PATTERNS, perfPlacements, type PerfPattern } from "./perforation.ts";
+import {
+  PERF_LABELS,
+  PERF_PATTERNS,
+  PERF_SHAPE_LABELS,
+  PERF_SHAPES,
+  type PerfInput,
+  perfPlacements,
+  type PerfPattern,
+  type PerfShape,
+} from "./perforation.ts";
 
 export const schema = defineParams({
   // --- form -------------------------------------------------------------------------------
@@ -83,6 +92,29 @@ export const schema = defineParams({
     group: "perforation",
     label: "Pattern",
     optionLabels: PERF_LABELS,
+  }),
+  perfShape: pick(PERF_SHAPES, {
+    def: "circle",
+    group: "perforation-shape",
+    label: "Hole shape",
+    optionLabels: PERF_SHAPE_LABELS,
+  }),
+  perfAspect: num({
+    def: 1,
+    min: 1,
+    max: 8,
+    step: 0.1,
+    group: "perforation-shape",
+    label: "Stretch",
+  }),
+  perfRot: num({
+    def: 0,
+    min: -180,
+    max: 180,
+    step: 5,
+    group: "perforation-rot",
+    label: "Rotation",
+    unit: "°",
   }),
   perfRows: num({ def: 14, min: 1, max: 48, step: 1, group: "perforation-grid", label: "Rows" }),
   perfCols: num({ def: 24, min: 3, max: 96, step: 1, group: "perforation-grid", label: "Columns" }),
@@ -210,6 +242,27 @@ export function effectiveWall(p: Params): number {
   return p.vaseMode ? VASE_WALL : p.wall;
 }
 
+// The one adapter from params to the pattern generator's input — the cutter builder, the hole
+// counter, the drag-preview texture and the bench all marshal through here, so they cannot disagree
+// about what a placement means.
+//
+// radiusAt is the SILHOUETTE radius only (no section/flute modulation): even spacing and the
+// preview's metric scaling are about how far apart holes sit around the shade, which the overall
+// girth governs, not the local lobe wobble.
+export function perfInputOf(p: Params, curve: readonly CtrlPt[]): PerfInput {
+  return {
+    pattern: p.perfPattern,
+    rows: p.perfRows,
+    cols: p.perfCols,
+    dia: p.perfDia,
+    margin: p.perfMargin,
+    gradient: p.perfGradient,
+    height: p.height,
+    even: p.perfEven,
+    radiusAt: (v) => sampleRadius(curve, v) * p.girth,
+  };
+}
+
 // Counted from the real placements, not rows x cols: that product was only ever right for a plain
 // grid, and is wrong for hex (short alternate rows), spiral, scatter, and any even-spaced lattice.
 //
@@ -232,17 +285,7 @@ function countHoles(p: Params, curve: readonly CtrlPt[]): number {
     p.girth,
   ].join("|");
   if (holeMemo && holeMemo.key === key && holeMemo.curve === curve) return holeMemo.n;
-  const n = perfPlacements({
-    pattern: p.perfPattern,
-    rows: p.perfRows,
-    cols: p.perfCols,
-    dia: p.perfDia,
-    margin: p.perfMargin,
-    gradient: p.perfGradient,
-    height: p.height,
-    even: p.perfEven,
-    radiusAt: (v) => sampleRadius(curve, v) * p.girth,
-  }).length;
+  const n = perfPlacements(perfInputOf(p, curve)).length;
   holeMemo = { key, curve, n };
   return n;
 }
@@ -339,6 +382,31 @@ export function warnings(
       bad: false,
     });
   }
+  if (p.perfPattern !== "none") {
+    // Vertical fit is a heuristic on the nominal size: stretch raises a hole's height, rotation
+    // tips it back toward its width. Merged or rim-breaching holes still build a valid solid (the
+    // union just fuses them), so both stay advisory — but the readout's hole count goes wrong and a
+    // breached rim is usually not what was meant.
+    const rad = (p.perfRot * Math.PI) / 180;
+    const holeH =
+      p.perfDia * (p.perfAspect * Math.abs(Math.cos(rad)) + Math.abs(Math.sin(rad)));
+    if (p.perfRows > 1) {
+      const mv = p.height > 0 ? Math.min(0.45, p.perfMargin / p.height) : 0;
+      const rowPitch = ((1 - 2 * mv) * p.height) / (p.perfRows - 1);
+      if (holeH >= rowPitch) {
+        out.push({
+          text: `${holeH.toFixed(0)} mm tall holes merge vertically at ${p.perfRows} rows — reduce the stretch or the rows.`,
+          bad: false,
+        });
+      }
+    }
+    if (holeH / 2 > p.perfMargin) {
+      out.push({
+        text: "Holes are taller than the rim margin — they may cut into the rims.",
+        bad: false,
+      });
+    }
+  }
   if (p.fluteCount > 0 && p.fluteDepth >= d.minR * secMin * 0.5) {
     out.push({ text: "Flutes are deep enough to cut through the shade.", bad: true });
   }
@@ -357,4 +425,28 @@ export function warnings(
   return out;
 }
 
-export type { SectionKind, PerfPattern };
+// The old "slots" PATTERN became pattern="grid" + shape="slot" when arrangement and profile split
+// into orthogonal axes. This rewrites a stored raw blob (BEFORE sanitize, which would silently pin
+// the unknown pick value back to the default and lose the design). Returns null when there is
+// nothing to migrate. The aspect reproduces the auto height the old pattern computed from the band
+// between rows, and perfEven is forced off because the old slots case never applied it.
+export function migrateStored(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (r.perfPattern !== "slots") return null;
+  const num = (v: unknown, def: number) => (typeof v === "number" && Number.isFinite(v) ? v : def);
+  const rows = Math.max(1, Math.round(num(r.perfRows, 14)));
+  const dia = Math.max(1, num(r.perfDia, 6));
+  const height = num(r.height, 200);
+  const mv = height > 0 ? Math.min(0.45, num(r.perfMargin, 12) / height) : 0;
+  const aspect = Math.max(2, ((1 - 2 * mv) * height) / rows / dia / 1.6);
+  return {
+    ...r,
+    perfPattern: "grid",
+    perfShape: "slot",
+    perfAspect: Math.min(8, Math.round(aspect * 10) / 10),
+    perfEven: false,
+  };
+}
+
+export type { SectionKind, PerfPattern, PerfShape };

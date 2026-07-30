@@ -12,9 +12,9 @@ import { BufferAttribute, BufferGeometry } from "three";
 import { type Mat, scope, type Solid } from "parametric-kit/csg";
 import { type CtrlPt, sampleRadius } from "./curve.ts";
 import { makeSection, suggestedUSegments } from "./section.ts";
-import { perfPlacements } from "./perforation.ts";
-import { effectiveWall, type Params } from "./params.ts";
-import { circle, slot } from "./shapes.ts";
+import { type PerfShape, perfPlacements, type Placement } from "./perforation.ts";
+import { effectiveWall, type Params, perfInputOf } from "./params.ts";
+import { perfProfile } from "./shapes.ts";
 
 const TAU = Math.PI * 2;
 
@@ -44,10 +44,12 @@ export function qualityFor(p: Params, base: Quality): Quality {
   };
 }
 
-// Segment count for one cutter. The ratios reproduce the original 12/10/16 exactly at cut = 16, so
-// an exported STL is triangle-for-triangle what it always was.
-function cutterSegments(dia: number, aspect: number, cut: number): number {
-  if (aspect > 1.05) return Math.max(5, Math.round(cut * 0.75));
+// Segment count for one cutter. The circle/slot ratios reproduce the original 12/10/16 exactly at
+// cut = 16, so an exported STL of a round-hole design is triangle-for-triangle what it always was.
+// Straight-edged shapes fall through harmlessly: THREE samples line curves at their endpoints
+// whatever the division count, so a hexagon cutter is 6 points around regardless.
+function cutterSegments(shape: PerfShape, dia: number, cut: number): number {
+  if (shape === "slot") return Math.max(5, Math.round(cut * 0.75));
   if (dia < 4) return Math.max(4, Math.round(cut * 0.625));
   return cut;
 }
@@ -108,44 +110,74 @@ function norm(v: Vec3): Vec3 {
 // The shell as an indexed watertight mesh: outer skin, inner skin offset along the surface normal,
 // and an annulus at each rim. Vertices are shared around the seam (index modulo NU), which is what
 // lets fromMesh() skip Manifold's leaky merge step.
+//
+// `uv: true` is the DRAFT-ONLY variant: the seam column is stored twice (NU + 1 columns, identical
+// positions) so a (u, v) attribute can run 0..1 without the last quad interpolating backwards
+// through the whole texture — which is what the drag preview needs to alpha-map holes on. The
+// duplicated column makes the seam topologically open, so this variant must never reach fromMesh();
+// the draft path bypasses the kernel entirely.
 export function shellMesh(
   p: Params,
   curve: readonly CtrlPt[],
   q: Quality,
-): { verts: Float32Array; tris: Uint32Array } {
+): { verts: Float32Array; tris: Uint32Array };
+export function shellMesh(
+  p: Params,
+  curve: readonly CtrlPt[],
+  q: Quality,
+  uv: true,
+): { verts: Float32Array; tris: Uint32Array; uvs: Float32Array };
+export function shellMesh(
+  p: Params,
+  curve: readonly CtrlPt[],
+  q: Quality,
+  uv = false,
+): { verts: Float32Array; tris: Uint32Array; uvs?: Float32Array } {
   const NU = Math.max(8, Math.round(q.u));
   const NV = Math.max(3, Math.round(q.v));
+  const C = uv ? NU + 1 : NU; // columns stored per ring; the extra one repeats i = 0 at u = 1
   const wall = effectiveWall(p);
   const surface = makeSurface(p, curve);
 
-  const verts = new Float32Array(2 * NU * NV * 3);
+  const verts = new Float32Array(2 * C * NV * 3);
+  const uvs = uv ? new Float32Array(2 * C * NV * 2) : undefined;
   let w = 0;
+  let uw = 0;
   // Outer skin.
   for (let j = 0; j < NV; j++) {
     const v = j / (NV - 1);
-    for (let i = 0; i < NU; i++) {
-      const pt = surface.at(i / NU, v);
+    for (let i = 0; i < C; i++) {
+      const pt = surface.at((i % NU) / NU, v);
       verts[w++] = pt[0];
       verts[w++] = pt[1];
       verts[w++] = pt[2];
+      if (uvs) {
+        uvs[uw++] = i / NU;
+        uvs[uw++] = v;
+      }
     }
   }
   // Inner skin: a true normal offset, so wall thickness is constant even where the silhouette slopes.
+  // Same (u, v) as the outer skin, so alpha-mapped holes align exactly through the wall.
   for (let j = 0; j < NV; j++) {
     const v = j / (NV - 1);
-    for (let i = 0; i < NU; i++) {
-      const { pos, n } = surface.frame(i / NU, v);
+    for (let i = 0; i < C; i++) {
+      const { pos, n } = surface.frame((i % NU) / NU, v);
       verts[w++] = pos[0] - n[0] * wall;
       verts[w++] = pos[1] - n[1] * wall;
       // Clamped so both rims stay flat: on a sloped wall the normal has a Z component that would
       // otherwise push the inner rim above or below the outer one, leaving a knife edge on the bed.
       verts[w++] = Math.min(p.height, Math.max(0, pos[2] - n[2] * wall));
+      if (uvs) {
+        uvs[uw++] = i / NU;
+        uvs[uw++] = v;
+      }
     }
   }
 
-  const base = NU * NV;
-  const o = (i: number, j: number) => j * NU + (i % NU);
-  const n_ = (i: number, j: number) => base + j * NU + (i % NU);
+  const base = C * NV;
+  const o = (i: number, j: number) => j * C + (i % C);
+  const n_ = (i: number, j: number) => base + j * C + (i % C);
   // 2 tris per outer quad + 2 per inner quad + 2 per rim quad at each of the two rims.
   const tris = new Uint32Array(((NV - 1) * 2 * 2 + 4) * NU * 3);
   let t = 0;
@@ -171,7 +203,7 @@ export function shellMesh(
     push(o(i, top), o(i + 1, top), n_(i + 1, top)); // top annulus, normal +Z
     push(o(i, top), n_(i + 1, top), n_(i, top));
   }
-  return { verts, tris };
+  return { verts, tris, uvs };
 }
 
 // One prototype cutter, transformed per hole — building 300 separate CrossSections would dominate the
@@ -183,19 +215,7 @@ function cutters(
   s: ReturnType<typeof scope>,
   cut: number,
 ): Solid[] {
-  const places = perfPlacements({
-    pattern: p.perfPattern,
-    rows: p.perfRows,
-    cols: p.perfCols,
-    dia: p.perfDia,
-    margin: p.perfMargin,
-    gradient: p.perfGradient,
-    height: p.height,
-    even: p.perfEven,
-    // Silhouette radius only (no section/flute modulation): even spacing is about how far apart the
-    // holes sit around the shade, which the overall girth governs, not the local lobe wobble.
-    radiusAt: (v) => sampleRadius(curve, v) * p.girth,
-  });
+  const places = perfPlacements(perfInputOf(p, curve));
   if (places.length === 0) return [];
 
   const surface = makeSurface(p, curve);
@@ -203,31 +223,46 @@ function cutters(
   const L = Math.max(12, wall * 8 + p.fluteDepth * 2 + p.waveDepth * 2); // must clear the wall everywhere
   const out: Solid[] = [];
 
-  // Group by (dia, aspect) so each distinct cutter size is built once and only transformed after.
-  const groups = new Map<string, { dia: number; aspect: number; at: typeof places }>();
+  // Group by diameter so each distinct cutter size is built once and only transformed after.
+  // Quantised to 0.05 mm: a gradient or scatter otherwise yields a unique size per hole and we'd be
+  // back to building one CrossSection each. Shape, stretch and rotation are single params — the same
+  // for every hole — so they need no place in the key.
+  const groups = new Map<number, Placement[]>();
   for (const pl of places) {
-    // Quantise to 0.05 mm: a gradient or scatter otherwise yields a unique size per hole and we'd be
-    // back to building one CrossSection each.
     const dia = Math.round(pl.dia * 20) / 20;
-    const key = `${dia}|${pl.aspect.toFixed(2)}`;
-    const g = groups.get(key) ?? { dia, aspect: pl.aspect, at: [] };
-    g.at.push(pl);
-    groups.set(key, g);
+    const g = groups.get(dia) ?? [];
+    g.push(pl);
+    groups.set(dia, g);
   }
 
-  for (const g of groups.values()) {
-    const profile = g.aspect > 1.05 ? slot(g.dia, g.dia * g.aspect) : circle(g.dia / 2);
-    const proto = s.extrude(profile, L, cutterSegments(g.dia, g.aspect, cut));
-    for (const pl of g.at) {
+  // The slot bakes its stretch into the profile (a stadium's ends stay semicircular at any length);
+  // every other shape is stretched by scaling the cutter's local Y in the placement transform, so
+  // the prototype is shared across all stretches. Rotation always rides in the transform — applied
+  // after the stretch, so a shape elongates along its own axis and then tips.
+  const aspect = Math.max(1, p.perfAspect);
+  const yScale = p.perfShape === "slot" ? 1 : aspect;
+  const rot = (p.perfRot * Math.PI) / 180;
+  const cosR = Math.cos(rot);
+  const sinR = Math.sin(rot);
+
+  for (const [dia, at] of groups) {
+    const proto = s.extrude(
+      perfProfile(p.perfShape, dia, aspect),
+      L,
+      cutterSegments(p.perfShape, dia, cut),
+    );
+    for (const pl of at) {
       const { pos, n, tu, tv } = surface.frame(pl.u, pl.v);
+      // Local X = rotated across-surface, local Y = rotated up-surface × stretch, local Z = normal —
+      // the extrusion depth is untouched by the stretch because it lives on Z alone.
       const m: Mat = [
-        tu[0],
-        tu[1],
-        tu[2],
+        cosR * tu[0] + sinR * tv[0],
+        cosR * tu[1] + sinR * tv[1],
+        cosR * tu[2] + sinR * tv[2],
         0,
-        tv[0],
-        tv[1],
-        tv[2],
+        yScale * (cosR * tv[0] - sinR * tu[0]),
+        yScale * (cosR * tv[1] - sinR * tu[1]),
+        yScale * (cosR * tv[2] - sinR * tu[2]),
         0,
         n[0],
         n[1],
@@ -276,17 +311,19 @@ export function buildShade(
 ): BufferGeometry {
   const t0 = performance.now();
   const q = qualityFor(p, quality);
-  const { verts, tris } = shellMesh(p, curve, q);
-  const t1 = performance.now();
 
   // cut = 0 means DRAFT: no perforation, therefore no boolean, therefore nothing the kernel is
   // needed for — shellMesh already produced the exact triangles we want to draw. Adopting them into
   // Manifold would cost ~5x the mesh generation itself (ofMesh validates 2-manifoldness), which at
   // this quality is the entire budget. Preview and export still go through the kernel, so anything
-  // that becomes an STL is still validated.
+  // that becomes an STL is still validated. The draft carries a uv attribute so the drag preview
+  // can alpha-map the perforation onto it (see perf-texture.ts).
   if (q.cut === 0) {
+    const { verts, tris, uvs } = shellMesh(p, curve, q, true);
+    const t1 = performance.now();
     const g = new BufferGeometry();
     g.setAttribute("position", new BufferAttribute(verts, 3));
+    g.setAttribute("uv", new BufferAttribute(uvs, 2));
     g.setIndex(new BufferAttribute(tris, 1));
     lastBuild.mesh = t1 - t0;
     lastBuild.adopt = 0;
@@ -297,6 +334,9 @@ export function buildShade(
     lastBuild.holes = 0;
     return g;
   }
+
+  const { verts, tris } = shellMesh(p, curve, q);
+  const t1 = performance.now();
 
   const s = scope();
   let shade = s.fromMesh(verts, tris);

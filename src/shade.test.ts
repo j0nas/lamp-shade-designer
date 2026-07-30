@@ -7,8 +7,8 @@ import { defaults } from "parametric-kit/params";
 import { bbox, signedVolume, volume } from "parametric-kit/testkit";
 import { familyCurve, FAMILY_NAMES } from "./curve.ts";
 import { SECTION_KINDS } from "./section.ts";
-import { PERF_PATTERNS } from "./perforation.ts";
-import { dims, type Params, schema, warnings } from "./params.ts";
+import { PERF_PATTERNS, PERF_SHAPES } from "./perforation.ts";
+import { dims, migrateStored, type Params, schema, warnings } from "./params.ts";
 import { buildShade, PREVIEW, qualityFor, shellMesh } from "./shade.ts";
 
 beforeAll(async () => {
@@ -76,6 +76,23 @@ describe("the shell", () => {
     const { verts, tris } = shellMesh(p, curve, q);
     expect(verts.length / 3).toBe(2 * q.u * q.v);
     expect(tris.length % 3).toBe(0);
+    for (const i of tris) expect(i).toBeLessThan(verts.length / 3);
+  });
+
+  test("the draft uv variant duplicates the seam column so u can run 0..1", () => {
+    // The drag preview alpha-maps holes by uv; a shared seam vertex would have to be u = 0 AND
+    // u = 1 at once, so the draft mesh stores that column twice at identical positions.
+    const p = base();
+    const q = qualityFor(p, PREVIEW);
+    const { verts, tris, uvs } = shellMesh(p, curve, q, true);
+    const C = q.u + 1;
+    expect(verts.length / 3).toBe(2 * C * q.v);
+    expect(uvs.length / 2).toBe(verts.length / 3);
+    for (const k of [0, 1, 2]) expect(verts[(C - 1) * 3 + k]).toBeCloseTo(verts[k], 9);
+    expect(uvs[0]).toBe(0);
+    expect(uvs[(C - 1) * 2]).toBe(1);
+    // Same triangle count as the welded variant — only the indexing changed, not the surface.
+    expect(tris.length).toBe(shellMesh(p, curve, q).tris.length);
     for (const i of tris) expect(i).toBeLessThan(verts.length / 3);
   });
 });
@@ -271,6 +288,62 @@ describe("perforation", () => {
   });
 });
 
+describe("hole shapes", () => {
+  // Modest hole counts throughout: the boolean is the entire cost and these multiply across shapes.
+  const shaped = (over: Partial<Params> = {}): Params =>
+    base({ perfPattern: "grid", perfRows: 4, perfCols: 8, perfDia: 6, perfMargin: 20, ...over });
+
+  test("every shape pierces the wall: genus = holeCount + 1", () => {
+    // The same invariant the circle tests lean on, per shape — a cutter that merely dents the wall,
+    // or a mis-wound profile the kernel rejects, both fail here.
+    for (const perfShape of PERF_SHAPES) {
+      const p = shaped({ perfShape });
+      const g = buildShade(p, curve);
+      expect(signedVolume(g)).toBeGreaterThan(0);
+      expect(genusOf(g)).toBe(dims(p, curve).holeCount + 1);
+    }
+  });
+
+  test("stretch elongates the holes: more material removed, same topology", () => {
+    const round = buildShade(shaped({ perfShape: "hex" }), curve);
+    const tall = buildShade(shaped({ perfShape: "hex", perfAspect: 3 }), curve);
+    expect(volume(tall)).toBeLessThan(volume(round));
+    expect(genusOf(tall)).toBe(genusOf(round));
+  });
+
+  test("rotation by a shape's symmetry angle changes nothing", () => {
+    // A diamond has 90° symmetry, so rot 0 and rot 90 place geometrically identical cutters — any
+    // volume drift means rotation is leaking into the placement or the stretch axis.
+    const v0 = volume(buildShade(shaped({ perfShape: "diamond" }), curve));
+    const v90 = volume(buildShade(shaped({ perfShape: "diamond", perfRot: 90 }), curve));
+    expect(Math.abs(v90 - v0) / v0).toBeLessThan(1e-6);
+  });
+
+  test("a stretched slot rotated flat still pierces cleanly", () => {
+    // Horizontal slots are the stretch axis tipped 90° — the transform must stretch the shape's own
+    // Y before rotating, or this would stretch along the surface normal and stop cutting through.
+    const p = shaped({ perfShape: "slot", perfAspect: 4, perfRot: 90, perfDia: 4 });
+    const g = buildShade(p, curve);
+    expect(signedVolume(g)).toBeGreaterThan(0);
+    expect(genusOf(g)).toBe(dims(p, curve).holeCount + 1);
+  });
+});
+
+describe("stored-params migration", () => {
+  test("a saved slots design becomes grid + slot shape with the old auto stretch", () => {
+    const out = migrateStored({ perfPattern: "slots", perfRows: 8, perfDia: 4, height: 200, perfMargin: 12 });
+    expect(out).toMatchObject({ perfPattern: "grid", perfShape: "slot", perfEven: false });
+    // Old formula: max(2, vSpan·height / rows / dia / 1.6) with mv = 12/200.
+    expect(out?.perfAspect).toBeCloseTo(Math.max(2, (0.88 * 200) / 8 / 4 / 1.6), 1);
+  });
+
+  test("anything else passes through untouched", () => {
+    expect(migrateStored({ perfPattern: "grid" })).toBeNull();
+    expect(migrateStored(null)).toBeNull();
+    expect(migrateStored("junk")).toBeNull();
+  });
+});
+
 describe("lint", () => {
   // Each assertion pins a DISTINCTIVE phrase. Matching loosely on /wall/ once passed for the wrong
   // reason — it caught "the bulb intersects the shade wall" while the wall-thickness rule never ran.
@@ -305,6 +378,21 @@ describe("lint", () => {
 
   test("flags holes that would overlap where the shade narrows", () => {
     expect(has(base({ perfPattern: "grid", perfCols: 64, perfDia: 20 }), /overlap/i)).toBe(true);
+  });
+
+  test("flags stretched holes that merge into the next row", () => {
+    const tall = base({ perfShape: "slot", perfAspect: 6, perfDia: 8, perfRows: 20 });
+    expect(has(tall, /merge vertically/i)).toBe(true);
+    expect(has(base(), /merge vertically/i)).toBe(false);
+    // Rotating the same slot flat drops its height back to its width, so the warning must clear.
+    expect(has({ ...tall, perfRot: 90, perfRows: 8 }, /merge vertically/i)).toBe(false);
+  });
+
+  test("flags holes taller than the rim margin", () => {
+    expect(
+      has(base({ perfShape: "slot", perfAspect: 8, perfDia: 10, perfMargin: 5 }), /taller than the rim/i),
+    ).toBe(true);
+    expect(has(base(), /taller than the rim/i)).toBe(false);
   });
 
   test("flags a footprint that overruns the H2C bed", () => {

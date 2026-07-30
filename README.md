@@ -12,8 +12,8 @@ Two things this does that a CAD package structurally cannot:
   perforation pattern onto a floor and back wall — with wall thickness driving how much the shade
   glows. You are designing a light; Fusion shows you a grey solid.
 - **Orthogonal axes that multiply.** Silhouette × cross-section × twist × flutes × waves ×
-  perforation. Eight silhouettes times six sections times seven patterns is thousands of distinct
-  shades from a small amount of code, and exploring them is a slider drag rather than 20 edits.
+  perforation pattern × hole shape. Eight silhouettes times six sections times six patterns times
+  seven hole shapes is tens of thousands of distinct shades from a small amount of code, and exploring them is a slider drag rather than 20 edits.
 
 What it deliberately gives up: it makes the shades it was programmed to make. Anything outside that
 envelope is a code change, not a click.
@@ -23,7 +23,8 @@ envelope is a code change, not a click.
 ```
 curve.ts        silhouette as control points + Catmull-Rom sampler + families (pure)
 section.ts      cross-section radial functions, normalised to max radius 1 (pure)
-perforation.ts  patterns -> placements in (u,v) parameter space (pure, deterministic)
+perforation.ts  patterns -> placements in (u,v) parameter space; hole-shape ids (pure, deterministic)
+perf-texture.ts placements -> drag-preview alpha map (pure polygon math + a CanvasTexture)
 params.ts       schema + dims() + printability/electrical lint
 shade.ts        S(u,v) shell -> indexed mesh -> Manifold via fromMesh() -> batched perforation cut
 fitter.ts       fitter in Manifold (preview + STL) + fitterSpec() shared with the STEP builder
@@ -81,11 +82,16 @@ Dragging a control must not wait on a boolean that takes 130 ms at default setti
 1. **Everything builds in a worker** (`build-worker.ts`, `parametric-kit/worker`) with latest-wins
    scheduling — one build in flight, mid-drag requests dropped rather than queued. The main thread
    blocks for **0 ms** per input event, measured; it was 170 ms.
-2. **Draft while you drag.** Every change asks for `DRAFT` — no perforation, reduced resolution — and
-   a 180 ms settle timer then asks for the full `PREVIEW`. A draft is **0.8 ms** because with no
-   cutters there is no boolean, and therefore no reason to enter the kernel at all: `buildShade()`
-   returns the shell triangles directly as a `BufferGeometry`. Anything that becomes an STL still
-   goes through Manifold and is still validated.
+2. **Draft while you drag.** Every change asks for `DRAFT` — no perforation cut, reduced
+   resolution — and a 180 ms settle timer then asks for the full `PREVIEW`. A draft is **0.8 ms**
+   because with no cutters there is no boolean, and therefore no reason to enter the kernel at all:
+   `buildShade()` returns the shell triangles directly as a `BufferGeometry`. Anything that becomes
+   an STL still goes through Manifold and is still validated.
+   The perforation stays visible anyway: `perf-texture.ts` rasterises the same `(u, v)` placements
+   into an alpha map that is alpha-tested onto the draft (surface, depth and distance materials, so
+   lamp-mode shadows stay truthful too). Preview cost is therefore independent of hole count — a
+   4608-hole scatter drags at draft speed with every hole live — and the settled build swaps in the
+   real cut geometry, so nothing alpha-mapped is ever exported.
 3. **Preview cutters are coarser than export cutters.** `Quality.cut` is 8 for preview and 16 for
    export, which halves the boolean. A 6 mm hole is ~20 px on screen, where the difference is
    invisible; the ratios in `cutterSegments()` reproduce the old 12/10/16 exactly at `cut = 16`, so
@@ -125,9 +131,6 @@ so it would photograph the previous mesh.
 - STL/STEP export still builds on the main thread, so a dense export blocks the tab for seconds. It
   is a deliberate click rather than an interactive frame, and the worker client is fire-and-forget
   (latest-wins would let an export be superseded), so it needs its own request path.
-- Perforation still costs a boolean. Preview holes could instead be an alpha map generated from the
-  same `(u, v)` placements — the pattern is already in parameter space — which would make preview
-  cost independent of hole count. Real geometry would remain for export.
 - Variant gallery (render N thumbnails across one axis, click to adopt).
 - Clip-on fitter arms are modelled as straight cantilevers; a real sprung clip needs flex that
   geometry alone can't express. Print in PETG and expect to tune the grip radius.

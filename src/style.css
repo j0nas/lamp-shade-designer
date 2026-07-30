@@ -2,6 +2,10 @@
    so the hand-written sections in index.html and the generated schema rows style identically. */
 
 :root {
+  /* The panel is a fixed dark theme, not a system-theme follower. Declaring it tells the browser to
+     match the native bits we don't paint (select popup, caret, scrollbars) instead of handing us
+     light-mode chrome on a dark panel. */
+  color-scheme: dark;
   --accent: #421691;
   --accent-soft: #5c2bb8;
   --bg: #14121a;
@@ -142,9 +146,11 @@ details.group > summary > h2 {
 
 /* ---------- rows ---------- */
 
+/* Three columns, and exactly three grid items: label, slider, value box. The value column is sized
+   for the widest value PLUS its unit ("-360°", "480 mm"), because the unit lives inside the box. */
 .row {
   display: grid;
-  grid-template-columns: 1fr 128px 46px;
+  grid-template-columns: 1fr 108px 74px;
   align-items: center;
   gap: 8px;
   margin: 5px 0;
@@ -158,6 +164,40 @@ details.group > summary > h2 {
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--text);
+}
+
+/* The value box owns the border/background; the input inside it is borderless and fills it, so a
+   unit suffix reads as part of the field instead of wrapping onto its own line. */
+.num {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 3px 6px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+}
+
+.num:focus-within {
+  border-color: var(--accent-soft);
+}
+
+.num > input {
+  width: 100%;
+  min-width: 0; /* flex items floor at their content width; without this a long value evicts the unit */
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+
+.num > .unit {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 input[type="range"] {
@@ -305,16 +345,34 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* Quiet buttons: secondary actions that must not compete with the primary downloads. */
+button.muted,
 .curve-tools button {
-  flex: 1;
-  padding: 5px 8px;
   background: #ffffff0f;
   border-color: var(--panel-edge);
   font-weight: 450;
 }
 
+button.muted:hover:not(:disabled),
 .curve-tools button:hover {
   background: #ffffff1c;
+}
+
+.curve-tools button {
+  flex: 1;
+  padding: 5px 8px;
+}
+
+/* Factory reset: kept visually small and grey — it destroys the current design on one click. */
+#reset-all {
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 8px;
+  color: var(--text-dim);
+}
+
+#reset-all:hover {
+  color: var(--text);
 }
 
 @media (max-width: 640px) {

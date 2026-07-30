@@ -13,13 +13,17 @@ import {
   Color,
   type Light,
   Mesh,
+  MeshDepthMaterial,
+  MeshDistanceMaterial,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
   type Object3D,
   PlaneGeometry,
   PointLight,
+  RGBADepthPacking,
   type Scene,
   SphereGeometry,
+  type Texture,
 } from "three";
 import { BULBS, type Params } from "./params.ts";
 
@@ -58,6 +62,11 @@ export function createLighting(scene: Scene): Lighting {
     if ((o as Mesh).isMesh && type === "ShadowMaterial") catchers.push(o);
   });
   const studioEnv = scene.environment;
+  // Remember the viewer's background rather than clearing it for CAD mode: `background = null` falls
+  // through to the renderer's black clear colour, which made CAD look like the dark room and left
+  // lamp mode with nothing to switch FROM. Allocated once — apply() runs on every param change.
+  const studioBg = scene.background;
+  const lampBg = new Color(0x0b0a0f);
 
   // --- lamp-mode fixtures, added once and toggled by visibility ---
   const room = new AmbientLight(0xffffff, 0.12);
@@ -120,7 +129,7 @@ export function createLighting(scene: Scene): Lighting {
     for (const s of studio) s.light.intensity = lamp ? s.intensity * 0.04 : s.intensity;
     for (const c of catchers) c.visible = !lamp;
     scene.environment = lamp ? null : studioEnv;
-    scene.background = lamp ? new Color(0x0b0a0f) : null;
+    scene.background = lamp ? lampBg : studioBg;
 
     room.visible = lamp;
     // Ambient is not distance-attenuated, so it needs no unit gain — but it must be able to reach a
@@ -216,5 +225,29 @@ export function shadeMesh(geom: BufferGeometry, material: MeshPhysicalMaterial):
   const m = new Mesh(geom, material);
   m.castShadow = true;
   m.receiveShadow = true;
+  // Shadow passes render with their own materials, so the drag preview's alpha-tested holes need
+  // equivalents there — otherwise lamp mode would cast a solid shadow while the surface shows holes.
+  // With no alphaMap set these behave exactly like the renderer's built-in defaults.
+  m.customDepthMaterial = new MeshDepthMaterial({ depthPacking: RGBADepthPacking });
+  m.customDistanceMaterial = new MeshDistanceMaterial();
   return m;
+}
+
+// Toggle the drag preview's perforation on the shade: the alpha map + test go on every material the
+// mesh renders with — the surface, the directional-shadow depth pass, and the point-light-shadow
+// distance pass, so the cast pattern stays truthful mid-drag. null restores the solid materials
+// (the settled build has real holes and needs no help).
+export function setShadePerfPreview(mesh: Mesh, texture: Texture | null): void {
+  const mats = [mesh.material, mesh.customDepthMaterial, mesh.customDistanceMaterial] as (
+    | MeshPhysicalMaterial
+    | MeshDepthMaterial
+    | MeshDistanceMaterial
+    | undefined
+  )[];
+  for (const mat of mats) {
+    if (!mat || mat.alphaMap === texture) continue;
+    mat.alphaMap = texture;
+    mat.alphaTest = texture ? 0.5 : 0;
+    mat.needsUpdate = true; // alphaMap/alphaTest presence changes the compiled program
+  }
 }

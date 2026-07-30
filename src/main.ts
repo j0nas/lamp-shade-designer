@@ -2,7 +2,7 @@ import "./style.css";
 // Browser entry only: the ?url import lets Emscripten's locateFile fetch the wasm Vite bundled.
 // It would break plain Node, which is why it lives here and not in any shared module.
 import wasmUrl from "manifold-3d/manifold.wasm?url";
-import { Mesh } from "three";
+import { type BufferGeometry, Mesh } from "three";
 import { initCSG } from "parametric-kit/csg";
 import { createStore, installPanelCollapse, renderPanel } from "parametric-kit/params";
 import { createViewer, creased, installAppHook } from "parametric-kit/viewer";
@@ -27,12 +27,13 @@ import {
   saveCurve,
   smooth,
 } from "./curve.ts";
-import { dims, type Params, schema, warnings } from "./params.ts";
+import { dims, migrateStored, type Params, schema, warnings } from "./params.ts";
 import { buildShade, EXPORT, PREVIEW } from "./shade.ts";
 import type { BuildQuality, BuildReq, BuildRes } from "./build-protocol.ts";
 import { buildFitter, fitterSpec, fitterWarnings } from "./fitter.ts";
 import { installCurveEditor } from "./curve-editor.ts";
-import { createLighting, shadeMesh, type ViewMode } from "./lit.ts";
+import { createLighting, setShadePerfPreview, shadeMesh, type ViewMode } from "./lit.ts";
+import { createPerfPreview } from "./perf-texture.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -43,6 +44,15 @@ const $ = <T extends HTMLElement>(id: string): T => {
 await initCSG(wasmUrl);
 
 // --- state ---------------------------------------------------------------------------------------
+// Storage migration runs on the raw blob BEFORE the store touches it: load() sanitizes unknown pick
+// values back to their defaults, which would turn a saved "slots" design into staggered circles.
+try {
+  const key = "lamp-shade:params:v1"; // createStore appends :v1 to the key below
+  const migrated = migrateStored(JSON.parse(localStorage.getItem(key) ?? "null"));
+  if (migrated) localStorage.setItem(key, JSON.stringify(migrated));
+} catch {
+  // Unreadable storage degrades to defaults, exactly as store.load() would.
+}
 const store = createStore(schema, { key: "lamp-shade:params", version: 1 });
 const params: Params = store.load();
 let curve: CtrlPt[] = loadCurve();
@@ -64,6 +74,17 @@ viewer.scene.add(shade);
 const fitter = new Mesh(creased(buildFitter(params, curve)), lighting.fitterMaterial);
 fitter.castShadow = fitter.receiveShadow = true;
 viewer.scene.add(fitter);
+
+// While a control is being dragged the mesh on screen is a hole-less draft; this texture paints the
+// live perforation onto it so the pattern — the very thing most sliders manipulate — never blinks
+// out mid-drag. Draft results attach it, settled previews (real cut holes) drop it.
+const perfPreview = createPerfPreview();
+
+const swapGeom = (mesh: Mesh, geom: BufferGeometry): void => {
+  const old = mesh.geometry;
+  mesh.geometry = geom;
+  old.dispose();
+};
 
 // --- rebuild -------------------------------------------------------------------------------------
 // Every rebuild runs in a worker (latest-wins: mid-drag requests are dropped, never queued), so the
@@ -110,17 +131,20 @@ function scheduleRebuild(): void {
 client.onResult((res) => {
   const d = dims(params, curve);
 
-  const oldShade = shade.geometry;
-  shade.geometry = creased(unpackGeometry(res.shade));
-  oldShade.dispose();
-
-  const oldFitter = fitter.geometry;
-  fitter.geometry = creased(unpackGeometry(res.fitter));
-  oldFitter.dispose();
+  swapGeom(shade, creased(unpackGeometry(res.shade)));
+  swapGeom(fitter, creased(unpackGeometry(res.fitter)));
   // The fitter is BUILT flat on the bed (print orientation) and only lifted for display. Seat it so
   // its TOP face is level with the mount height, i.e. recessed into the opening rather than perched
   // on the rim like a lid.
   fitter.position.set(0, 0, Math.max(0, d.fitterZ - params.fitterThickness));
+
+  // Drawn from the CURRENT params rather than the ones this draft was built from: with latest-wins
+  // scheduling the texture can only be fresher than the mesh, never staler.
+  if (res.quality === "draft") {
+    setShadePerfPreview(shade, perfPreview.update(params, curve) ? perfPreview.texture : null);
+  } else {
+    setShadePerfPreview(shade, null);
+  }
 
   if (res.quality !== "draft") {
     shadeCm3 = res.shadeCm3;
@@ -177,6 +201,12 @@ const panel = renderPanel($("controls"), schema, params, {
     { id: "modulation-flute", visibleWhen: (p) => p.fluteCount > 0 },
     { id: "modulation-wave", visibleWhen: (p) => p.waveCount > 0 },
     { id: "perforation", title: "Perforation" },
+    { id: "perforation-shape", visibleWhen: (p) => p.perfPattern !== "none" },
+    // Rotating an unstretched circle is a no-op, so the knob only appears once it can do something.
+    {
+      id: "perforation-rot",
+      visibleWhen: (p) => p.perfPattern !== "none" && (p.perfShape !== "circle" || p.perfAspect > 1),
+    },
     { id: "perforation-grid", visibleWhen: (p) => p.perfPattern !== "none" },
     { id: "light", title: "Light" },
     { id: "fitter", title: "Fitter" },
@@ -256,6 +286,7 @@ const slug = () =>
     params.sectionKind,
     `${Math.round(dims(params, curve).outerDia)}x${Math.round(params.height)}`,
     params.perfPattern === "none" ? "solid" : params.perfPattern,
+    ...(params.perfPattern !== "none" && params.perfShape !== "circle" ? [params.perfShape] : []),
   ].join("-");
 
 $("dl-shade-stl").addEventListener("click", () => {
@@ -295,6 +326,19 @@ const mfBtn = $<HTMLButtonElement>("dl-shade-3mf");
 mfBtn.disabled = true;
 mfBtn.title = "Not implemented yet — use Shade STL";
 
+// Factory reset: params, silhouette and family back to first-run state, persisted so a reload stays
+// reset. View chrome (mode, brightness, toggles) is deliberately left alone — it frames the design
+// but isn't part of it.
+$("reset-all").addEventListener("click", () => {
+  Object.assign(params, store.defaults);
+  store.save(params);
+  familySelect.value = DEFAULT_FAMILY;
+  curve = familyCurve(DEFAULT_FAMILY);
+  saveCurve(curve);
+  panel.sync();
+  scheduleRebuild();
+});
+
 // --- boot ----------------------------------------------------------------------------------------
 installPanelCollapse($("panel"), $("panel").querySelector("h1")!, {
   startCollapsed: matchMedia("(max-width: 640px)").matches,
@@ -333,12 +377,9 @@ installAppHook({
   // so `rebuild(); render()` would photograph the previous mesh.
   rebuildSync() {
     const d = dims(params, curve);
-    const oldShade = shade.geometry;
-    shade.geometry = creased(buildShade(params, curve, PREVIEW));
-    oldShade.dispose();
-    const oldFitter = fitter.geometry;
-    fitter.geometry = creased(buildFitter(params, curve));
-    oldFitter.dispose();
+    swapGeom(shade, creased(buildShade(params, curve, PREVIEW)));
+    swapGeom(fitter, creased(buildFitter(params, curve)));
+    setShadePerfPreview(shade, null); // a full build has real holes; drop any drag overlay
     fitter.position.set(0, 0, Math.max(0, d.fitterZ - params.fitterThickness));
     shadeCm3 = volumeCm3(shade.geometry);
     fitterCm3 = volumeCm3(fitter.geometry);

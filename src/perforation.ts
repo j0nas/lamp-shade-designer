@@ -5,18 +5,15 @@
 // every pattern works with every form. shade.ts turns each placement into a cutter oriented along
 // the local surface normal.
 //
+// The cutter's SHAPE is the orthogonal axis: any profile drops into any lattice, so it is a single
+// param rather than part of a placement. The profiles themselves are THREE.Shape builders and live
+// in shapes.ts (perfProfile); the id lists sit here so the schema reads pattern and shape from one
+// module.
+//
 // Pure and deterministic: `scatter` uses a seeded PRNG so the same params always give the same holes
 // (a rebuild mid-slider-drag must not reshuffle the pattern).
 
-export const PERF_PATTERNS = [
-  "none",
-  "grid",
-  "stagger",
-  "hex",
-  "spiral",
-  "scatter",
-  "slots",
-] as const;
+export const PERF_PATTERNS = ["none", "grid", "stagger", "hex", "spiral", "scatter"] as const;
 export type PerfPattern = (typeof PERF_PATTERNS)[number];
 
 export const PERF_LABELS: Record<PerfPattern, string> = {
@@ -26,14 +23,33 @@ export const PERF_LABELS: Record<PerfPattern, string> = {
   hex: "Hex packed",
   spiral: "Spiral",
   scatter: "Scatter",
-  slots: "Vertical slots",
+};
+
+export const PERF_SHAPES = [
+  "circle",
+  "hex",
+  "diamond",
+  "triangle",
+  "slot",
+  "teardrop",
+  "star",
+] as const;
+export type PerfShape = (typeof PERF_SHAPES)[number];
+
+export const PERF_SHAPE_LABELS: Record<PerfShape, string> = {
+  circle: "Circle",
+  hex: "Hexagon",
+  diamond: "Diamond",
+  triangle: "Triangle",
+  slot: "Slot",
+  teardrop: "Teardrop",
+  star: "Star",
 };
 
 export type Placement = {
   u: number; // 0..1 around
   v: number; // 0..1 up
   dia: number; // mm across
-  aspect: number; // 1 = round; >1 = taller than wide (slots)
 };
 
 // mulberry32 — small, fast, and stable across runs. Seeded from the pattern knobs so changing rows
@@ -110,7 +126,7 @@ export function perfPlacements(inp: PerfInput): Placement[] {
         }
         const offset = r % 2 ? stagger / n : 0;
         for (let c = 0; c < n; c++) {
-          out.push({ u: (c / n + offset) % 1, v, dia: graded(dia, v, gradient), aspect: 1 });
+          out.push({ u: (c / n + offset) % 1, v, dia: graded(dia, v, gradient) });
         }
       }
       break;
@@ -121,7 +137,7 @@ export function perfPlacements(inp: PerfInput): Placement[] {
       for (let k = 0; k < total; k++) {
         const t = total === 1 ? 0.5 : k / (total - 1);
         const v = v0 + vSpan * t;
-        out.push({ u: (t * rows) % 1, v, dia: graded(dia, v, gradient), aspect: 1 });
+        out.push({ u: (t * rows) % 1, v, dia: graded(dia, v, gradient) });
       }
       break;
     }
@@ -132,18 +148,7 @@ export function perfPlacements(inp: PerfInput): Placement[] {
         const v = v0 + vSpan * rand();
         // Size varies ±35% on top of any gradient, which is what makes scatter read as organic.
         const jitter = 0.65 + rand() * 0.7;
-        out.push({ u: rand(), v, dia: graded(dia * jitter, v, gradient), aspect: 1 });
-      }
-      break;
-    }
-    case "slots": {
-      // Tall thin openings: one per column, `rows` stacked bands up the height.
-      const aspect = Math.max(2, (vSpan * inp.height) / rows / Math.max(1, dia) / 1.6);
-      for (let r = 0; r < rows; r++) {
-        const v = v0 + vSpan * at(r, rows);
-        for (let c = 0; c < cols; c++) {
-          out.push({ u: c / cols, v, dia: graded(dia, v, gradient), aspect });
-        }
+        out.push({ u: rand(), v, dia: graded(dia * jitter, v, gradient) });
       }
       break;
     }

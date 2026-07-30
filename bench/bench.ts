@@ -9,7 +9,7 @@
 import { initCSG } from "parametric-kit/csg";
 import { defaults } from "parametric-kit/params";
 import { familyCurve } from "../src/curve.ts";
-import { type Params, schema } from "../src/params.ts";
+import { type Params, perfInputOf, schema } from "../src/params.ts";
 import {
   buildShade,
   DRAFT,
@@ -84,17 +84,9 @@ const rows: Record<string, unknown>[] = [];
 for (const c of CASES) {
   if (ONLY && !c.name.includes(ONLY)) continue;
   const q = qualityFor(c.p, c.q);
-  const holes = perfPlacements({
-    pattern: c.p.perfPattern,
-    rows: c.p.perfRows,
-    cols: c.p.perfCols,
-    dia: c.p.perfDia,
-    margin: c.p.perfMargin,
-    gradient: c.p.perfGradient,
-    height: c.p.height,
-    even: c.p.perfEven,
-    radiusAt: () => 100,
-  }).length;
+  // The real curve, not a stand-in radius: with even spacing on, a fake radius reports a hole count
+  // buildShade() below doesn't actually cut.
+  const holes = perfPlacements(perfInputOf(c.p, curve)).length;
 
   const total = time(() => void buildShade(c.p, curve, c.q));
   // Phase split from the final run — the spread across runs is small enough that one sample is
