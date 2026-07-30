@@ -198,6 +198,55 @@ export function minBulbGap(watts: number): number {
   return Math.max(8, watts * 1.6);
 }
 
+// Vase mode prints one continuous single-wall spiral, so the wall is whatever the nozzle lays down
+// regardless of the param.
+const VASE_WALL = 0.42;
+
+// Split out of dims() because the geometry builders need ONLY this number, and dims() is expensive:
+// it samples the curve ~550 times, the section 512 times, and materialises every hole placement just
+// to count them. shellMesh(), cutters() and fitterSpec() each used to call dims() for this one field,
+// so a single rebuild paid for that three times over before any geometry was built.
+export function effectiveWall(p: Params): number {
+  return p.vaseMode ? VASE_WALL : p.wall;
+}
+
+// Counted from the real placements, not rows x cols: that product was only ever right for a plain
+// grid, and is wrong for hex (short alternate rows), spiral, scatter, and any even-spaced lattice.
+//
+// Memoised on one slot because dims() runs several times per frame (readout, warnings, the build
+// result handler) and building 4608 placement objects to read `.length` was the most expensive thing
+// left on the main thread during a drag. The curve is compared by reference — every edit swaps the
+// whole array, so that is exact rather than approximate.
+let holeMemo: { key: string; curve: readonly CtrlPt[]; n: number } | null = null;
+
+function countHoles(p: Params, curve: readonly CtrlPt[]): number {
+  const key = [
+    p.perfPattern,
+    p.perfRows,
+    p.perfCols,
+    p.perfDia,
+    p.perfMargin,
+    p.perfGradient,
+    p.height,
+    p.perfEven,
+    p.girth,
+  ].join("|");
+  if (holeMemo && holeMemo.key === key && holeMemo.curve === curve) return holeMemo.n;
+  const n = perfPlacements({
+    pattern: p.perfPattern,
+    rows: p.perfRows,
+    cols: p.perfCols,
+    dia: p.perfDia,
+    margin: p.perfMargin,
+    gradient: p.perfGradient,
+    height: p.height,
+    even: p.perfEven,
+    radiusAt: (v) => sampleRadius(curve, v) * p.girth,
+  }).length;
+  holeMemo = { key, curve, n };
+  return n;
+}
+
 export type Dims = {
   height: number;
   wall: number;
@@ -236,19 +285,7 @@ export function dims(p: Params, curve: readonly CtrlPt[]): Dims {
   }
   if (!Number.isFinite(bulbGap)) bulbGap = minR * secMin - bulb.dia / 2;
 
-  // Counted from the real placements, not rows x cols: that product was only ever right for a plain
-  // grid, and is wrong for hex (short alternate rows), spiral, scatter, and any even-spaced lattice.
-  const holeCount = perfPlacements({
-    pattern: p.perfPattern,
-    rows: p.perfRows,
-    cols: p.perfCols,
-    dia: p.perfDia,
-    margin: p.perfMargin,
-    gradient: p.perfGradient,
-    height: p.height,
-    even: p.perfEven,
-    radiusAt: (v) => sampleRadius(curve, v) * p.girth,
-  }).length;
+  const holeCount = countHoles(p, curve);
 
   return {
     height: p.height,
@@ -264,14 +301,19 @@ export function dims(p: Params, curve: readonly CtrlPt[]): Dims {
     bulbGap,
     requiredGap: minBulbGap(p.watts),
     fitterZ: p.fitterZ * p.height,
-    effectiveWall: p.vaseMode ? 0.42 : p.wall,
+    effectiveWall: effectiveWall(p),
   };
 }
 
 // Printability + electrical-safety lint. Deterministic and derived only from params + curve, so the
 // same warnings appear in the browser and in a Node test.
-export function warnings(p: Params, curve: readonly CtrlPt[]): { text: string; bad: boolean }[] {
-  const d = dims(p, curve);
+// `d` is optional so a caller that already has the dimensions (the readout does) doesn't pay for a
+// second full derivation just to lint them.
+export function warnings(
+  p: Params,
+  curve: readonly CtrlPt[],
+  d: Dims = dims(p, curve),
+): { text: string; bad: boolean }[] {
   const out: { text: string; bad: boolean }[] = [];
   const secMin = sectionMin(p.sectionKind, p.sides, p.sectionDepth);
 

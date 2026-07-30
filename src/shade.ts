@@ -8,25 +8,48 @@
 // Built in print orientation: bottom rim on z = 0, open top and bottom (topologically a tube, so a
 // solid shell has genus 1 before perforation and genus 1 + holes after).
 
-import type { BufferGeometry } from "three";
+import { BufferAttribute, BufferGeometry } from "three";
 import { type Mat, scope, type Solid } from "parametric-kit/csg";
 import { type CtrlPt, sampleRadius } from "./curve.ts";
 import { makeSection, suggestedUSegments } from "./section.ts";
 import { perfPlacements } from "./perforation.ts";
-import { dims, type Params } from "./params.ts";
+import { effectiveWall, type Params } from "./params.ts";
 import { circle, slot } from "./shapes.ts";
 
 const TAU = Math.PI * 2;
 
-export type Quality = { u: number; v: number };
+// `cut` is the segment count of a round perforation cutter, and it is the single most expensive
+// number in the app: the boolean's cost tracks the cutters' triangle count almost linearly (measured
+// on 4608 holes — 16 segments 14.7 s, 8 segments 6.4 s, 5 segments 4.0 s). A 6 mm hole is ~20 px
+// across in the viewport, where 8 segments is indistinguishable from 16, so the preview halves it
+// and export keeps the full count.
+// `uMax` caps what the cross-section is allowed to ask for. A 24-sided star wants 336 segments around
+// to keep its cusps from aliasing, which is right for a preview but is most of a draft's budget.
+export type Quality = { u: number; v: number; cut: number; uMax: number };
 
 // Preview trades a little smoothness for a responsive slider; export always runs at full resolution
 // so the STL is not what you happened to be looking at.
-export const PREVIEW: Quality = { u: 96, v: 56 };
-export const EXPORT: Quality = { u: 192, v: 128 };
+export const PREVIEW: Quality = { u: 96, v: 56, cut: 8, uMax: 512 };
+export const EXPORT: Quality = { u: 192, v: 128, cut: 16, uMax: 512 };
+// Used while a control is actively being dragged: perforation is skipped entirely (see buildShade),
+// so only the form is on screen and a rebuild is ~1 ms of mesh work instead of a boolean.
+export const DRAFT: Quality = { u: 72, v: 40, cut: 0, uMax: 144 };
 
 export function qualityFor(p: Params, base: Quality): Quality {
-  return { u: suggestedUSegments(p.sectionKind, p.sides, base.u), v: base.v };
+  return {
+    u: Math.min(base.uMax, suggestedUSegments(p.sectionKind, p.sides, base.u)),
+    v: base.v,
+    cut: base.cut,
+    uMax: base.uMax,
+  };
+}
+
+// Segment count for one cutter. The ratios reproduce the original 12/10/16 exactly at cut = 16, so
+// an exported STL is triangle-for-triangle what it always was.
+function cutterSegments(dia: number, aspect: number, cut: number): number {
+  if (aspect > 1.05) return Math.max(5, Math.round(cut * 0.75));
+  if (dia < 4) return Math.max(4, Math.round(cut * 0.625));
+  return cut;
 }
 
 type Vec3 = [number, number, number];
@@ -92,7 +115,7 @@ export function shellMesh(
 ): { verts: Float32Array; tris: Uint32Array } {
   const NU = Math.max(8, Math.round(q.u));
   const NV = Math.max(3, Math.round(q.v));
-  const wall = dims(p, curve).effectiveWall;
+  const wall = effectiveWall(p);
   const surface = makeSurface(p, curve);
 
   const verts = new Float32Array(2 * NU * NV * 3);
@@ -154,7 +177,12 @@ export function shellMesh(
 // One prototype cutter, transformed per hole — building 300 separate CrossSections would dominate the
 // rebuild. Each cutter is oriented so its local +Z is the surface normal and its local +Y runs up the
 // surface, which is what makes slot cutters stand vertical rather than at an arbitrary roll.
-function cutters(p: Params, curve: readonly CtrlPt[], s: ReturnType<typeof scope>): Solid[] {
+function cutters(
+  p: Params,
+  curve: readonly CtrlPt[],
+  s: ReturnType<typeof scope>,
+  cut: number,
+): Solid[] {
   const places = perfPlacements({
     pattern: p.perfPattern,
     rows: p.perfRows,
@@ -171,7 +199,7 @@ function cutters(p: Params, curve: readonly CtrlPt[], s: ReturnType<typeof scope
   if (places.length === 0) return [];
 
   const surface = makeSurface(p, curve);
-  const wall = dims(p, curve).effectiveWall;
+  const wall = effectiveWall(p);
   const L = Math.max(12, wall * 8 + p.fluteDepth * 2 + p.waveDepth * 2); // must clear the wall everywhere
   const out: Solid[] = [];
 
@@ -189,7 +217,7 @@ function cutters(p: Params, curve: readonly CtrlPt[], s: ReturnType<typeof scope
 
   for (const g of groups.values()) {
     const profile = g.aspect > 1.05 ? slot(g.dia, g.dia * g.aspect) : circle(g.dia / 2);
-    const proto = s.extrude(profile, L, g.aspect > 1.05 ? 12 : g.dia < 4 ? 10 : 16);
+    const proto = s.extrude(profile, L, cutterSegments(g.dia, g.aspect, cut));
     for (const pl of g.at) {
       const { pos, n, tu, tv } = surface.frame(pl.u, pl.v);
       const m: Mat = [
@@ -216,20 +244,87 @@ function cutters(p: Params, curve: readonly CtrlPt[], s: ReturnType<typeof scope
   return out;
 }
 
+// Where the last rebuild spent its time. Written on every buildShade() call; read by the readout and
+// by bench/bench.ts. A handful of performance.now() calls per build is far below the noise floor of
+// the work they measure, and having the split visible is what stopped us optimising the wrong phase
+// (the mesh generation is ~1% of a perforated rebuild; the boolean is the other 99%).
+export type BuildTimings = {
+  mesh: number; // JS surface evaluation -> triangle soup
+  adopt: number; // handing that mesh to the kernel
+  cutters: number; // building + placing the hole prototypes
+  boolean: number; // combining the cutters and subtracting them
+  extract: number; // kernel -> BufferGeometry
+  total: number;
+  holes: number;
+};
+
+export const lastBuild: BuildTimings = {
+  mesh: 0,
+  adopt: 0,
+  cutters: 0,
+  boolean: 0,
+  extract: 0,
+  total: 0,
+  holes: 0,
+};
+
 // Pure Params -> BufferGeometry: the preview mesh and the exported STL come from this one call.
 export function buildShade(
   p: Params,
   curve: readonly CtrlPt[],
   quality: Quality = PREVIEW,
 ): BufferGeometry {
+  const t0 = performance.now();
   const q = qualityFor(p, quality);
-  const s = scope();
   const { verts, tris } = shellMesh(p, curve, q);
-  let shade = s.fromMesh(verts, tris);
-  const tools = cutters(p, curve, s);
-  if (tools.length > 0) {
-    // One batched union then one difference — sequential cuts are far slower for the same result.
-    shade = s.sub(shade, s.union(tools));
+  const t1 = performance.now();
+
+  // cut = 0 means DRAFT: no perforation, therefore no boolean, therefore nothing the kernel is
+  // needed for — shellMesh already produced the exact triangles we want to draw. Adopting them into
+  // Manifold would cost ~5x the mesh generation itself (ofMesh validates 2-manifoldness), which at
+  // this quality is the entire budget. Preview and export still go through the kernel, so anything
+  // that becomes an STL is still validated.
+  if (q.cut === 0) {
+    const g = new BufferGeometry();
+    g.setAttribute("position", new BufferAttribute(verts, 3));
+    g.setIndex(new BufferAttribute(tris, 1));
+    lastBuild.mesh = t1 - t0;
+    lastBuild.adopt = 0;
+    lastBuild.cutters = 0;
+    lastBuild.boolean = 0;
+    lastBuild.extract = 0;
+    lastBuild.total = performance.now() - t0;
+    lastBuild.holes = 0;
+    return g;
   }
-  return s.finish(shade);
+
+  const s = scope();
+  let shade = s.fromMesh(verts, tris);
+
+  const t2 = performance.now();
+  const tools = cutters(p, curve, s, q.cut);
+
+  const t3 = performance.now();
+  if (tools.length > 0) {
+    // One batched combine then one difference — sequential cuts are far slower for the same result.
+    shade = s.sub(shade, s.union(tools));
+    // Manifold is LAZY: the ops above only build a DAG, and the whole boolean is actually evaluated
+    // by the first call that needs the result. Force it here so the timing split below attributes
+    // the cost to the boolean rather than to the extract that would otherwise trigger it. Costs
+    // nothing net — finish() would pay it a line later, and the kernel caches the evaluated node.
+    shade.numTri();
+  }
+
+  const t4 = performance.now();
+  const out = s.finish(shade);
+
+  const t5 = performance.now();
+  lastBuild.mesh = t1 - t0;
+  lastBuild.adopt = t2 - t1;
+  lastBuild.cutters = t3 - t2;
+  lastBuild.boolean = t4 - t3;
+  lastBuild.extract = t5 - t4;
+  lastBuild.total = t5 - t0;
+  lastBuild.holes = tools.length;
+  return out;
 }

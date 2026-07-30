@@ -6,6 +6,7 @@ import { Mesh } from "three";
 import { initCSG } from "parametric-kit/csg";
 import { createStore, installPanelCollapse, renderPanel } from "parametric-kit/params";
 import { createViewer, creased, installAppHook } from "parametric-kit/viewer";
+import { createBuildClient, unpackGeometry } from "parametric-kit/worker";
 import { downloadBlob, exportSTL } from "parametric-kit/export";
 import {
   filamentGrams,
@@ -28,6 +29,7 @@ import {
 } from "./curve.ts";
 import { dims, type Params, schema, warnings } from "./params.ts";
 import { buildShade, EXPORT, PREVIEW } from "./shade.ts";
+import type { BuildQuality, BuildReq, BuildRes } from "./build-protocol.ts";
 import { buildFitter, fitterSpec, fitterWarnings } from "./fitter.ts";
 import { installCurveEditor } from "./curve-editor.ts";
 import { createLighting, shadeMesh, type ViewMode } from "./lit.ts";
@@ -54,7 +56,9 @@ const viewer = createViewer($("app"), {
 });
 const lighting = createLighting(viewer.scene);
 
-const shade = shadeMesh(buildShade(params, curve, PREVIEW), lighting.shadeMaterial);
+// Built synchronously here so the first frame is the real thing — a worker round trip would show a
+// hole-less draft first. Every rebuild after this one goes through the worker.
+const shade = shadeMesh(creased(buildShade(params, curve, PREVIEW)), lighting.shadeMaterial);
 viewer.scene.add(shade);
 
 const fitter = new Mesh(creased(buildFitter(params, curve)), lighting.fitterMaterial);
@@ -62,48 +66,84 @@ fitter.castShadow = fitter.receiveShadow = true;
 viewer.scene.add(fitter);
 
 // --- rebuild -------------------------------------------------------------------------------------
-// Coalesced to one build per frame. Measured ~60–130 ms per rebuild depending on hole count, so a
-// fast drag will not hit 60 fps; if that becomes annoying this moves to parametric-kit/worker, which
-// exists for exactly this and needs no change to the pure builders.
-let queued = false;
-let lastMs = 0;
+// Every rebuild runs in a worker (latest-wins: mid-drag requests are dropped, never queued), so the
+// main thread never blocks on a boolean. Each change asks for a DRAFT — form only, no perforation,
+// ~1 ms — and a settle timer asks for the full PREVIEW once the control has been still for a moment.
+// That is what makes dragging feel live even on a design whose perforated build takes seconds.
+const SETTLE_MS = 180;
 
-function rebuild(): void {
-  const t0 = performance.now();
+const client = createBuildClient<BuildReq, BuildRes>(
+  () => new Worker(new URL("./build-worker.ts", import.meta.url), { type: "module" }),
+);
+
+let settleTimer: ReturnType<typeof setTimeout> | undefined;
+let lastMs = 0;
+let lastQuality: BuildQuality = "preview";
+// Draft builds have no holes, so their volume is not the shade's. Keep the last real numbers and go
+// on showing those rather than flashing a wrong weight for every frame of a drag.
+let shadeCm3 = 0;
+let fitterCm3 = 0;
+
+// Snapshot: the panel mutates `params` in place, and the request may be posted a tick later.
+const request = (quality: BuildQuality): void => {
+  client.request({ params: { ...params }, curve: curve.map((pt) => ({ ...pt })), quality });
+};
+
+let chromeQueued = false;
+
+function scheduleRebuild(): void {
+  request("draft");
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => request("preview"), SETTLE_MS);
+  // The readout and the silhouette editor derive from params rather than from the mesh, so they can
+  // update without waiting for a build to land — but coalesced to one pass per frame, because this
+  // runs on every pointermove of a drag.
+  if (chromeQueued) return;
+  chromeQueued = true;
+  requestAnimationFrame(() => {
+    chromeQueued = false;
+    readout(dims(params, curve));
+    curveEditor.draw();
+  });
+}
+
+client.onResult((res) => {
   const d = dims(params, curve);
 
   const oldShade = shade.geometry;
-  shade.geometry = creased(buildShade(params, curve, PREVIEW));
+  shade.geometry = creased(unpackGeometry(res.shade));
   oldShade.dispose();
 
   const oldFitter = fitter.geometry;
-  fitter.geometry = creased(buildFitter(params, curve));
+  fitter.geometry = creased(unpackGeometry(res.fitter));
   oldFitter.dispose();
   // The fitter is BUILT flat on the bed (print orientation) and only lifted for display. Seat it so
   // its TOP face is level with the mount height, i.e. recessed into the opening rather than perched
   // on the rim like a lid.
   fitter.position.set(0, 0, Math.max(0, d.fitterZ - params.fitterThickness));
 
-  lighting.update(params, d.height, d.maxR);
-  lastMs = performance.now() - t0;
-  readout(d);
-  curveEditor.draw();
-  viewer.invalidate();
-}
+  if (res.quality !== "draft") {
+    shadeCm3 = res.shadeCm3;
+    fitterCm3 = res.fitterCm3;
+  }
+  lastMs = res.timings.total;
+  lastQuality = res.quality;
 
-function scheduleRebuild(): void {
-  if (queued) return;
-  queued = true;
-  requestAnimationFrame(() => {
-    queued = false;
-    rebuild();
-  });
-}
+  lighting.update(params, d.height, d.maxR);
+  readout(d);
+  viewer.invalidate();
+});
+
+client.onError((message) => {
+  // A build throws on params the lint already flags (a wall thicker than the radius inverts the
+  // inner surface). Keep the last good mesh on screen and let the warnings explain it.
+  console.error("build failed", message);
+});
 
 // --- readout -------------------------------------------------------------------------------------
 function readout(d: ReturnType<typeof dims>): void {
-  const shadeCm3 = volumeCm3(shade.geometry);
-  const fitterCm3 = volumeCm3(fitter.geometry);
+  // Volumes come from the worker (measured on the real cut solids) rather than from the mesh on
+  // screen, which during a drag is a hole-less draft.
   const total = shadeCm3 + fitterCm3;
   const grams = Math.round(filamentGrams(total));
   const metres = filamentMetres(total);
@@ -118,9 +158,9 @@ function readout(d: ReturnType<typeof dims>): void {
     `<strong>⌀${d.outerDia.toFixed(0)} × ${d.height.toFixed(0)} mm</strong> · ` +
     `${d.holeCount} holes · <strong>${grams} g</strong> (${metres.toFixed(1)} m) · ` +
     `bulb gap <strong>${d.bulbGap.toFixed(0)} mm</strong><br>${badges}` +
-    `<br><span class="perf">rebuild ${lastMs.toFixed(0)} ms</span>`;
+    `<br><span class="perf">${lastQuality} rebuild ${lastMs.toFixed(0)} ms</span>`;
 
-  const all = [...warnings(params, curve), ...fitterWarnings(params, curve)];
+  const all = [...warnings(params, curve, d), ...fitterWarnings(params, curve)];
   $("warnings").innerHTML = all
     .map((w) => `<div class="${w.bad ? "bad" : ""}">${w.text}</div>`)
     .join("");
@@ -261,7 +301,16 @@ installPanelCollapse($("panel"), $("panel").querySelector("h1")!, {
 });
 
 lighting.setMode("cad");
-rebuild();
+// Seed the readout from the boot build; from here on the worker supplies both volumes.
+shadeCm3 = volumeCm3(shade.geometry);
+fitterCm3 = volumeCm3(fitter.geometry);
+{
+  const d = dims(params, curve);
+  fitter.position.set(0, 0, Math.max(0, d.fitterZ - params.fitterThickness));
+  lighting.update(params, d.height, d.maxR);
+  readout(d);
+}
+curveEditor.draw();
 viewer.frameCamera([shade]);
 viewer.start();
 
@@ -279,7 +328,25 @@ installAppHook({
   setCurve(pts: CtrlPt[]) {
     curve = pts;
   },
-  rebuild,
+  rebuild: scheduleRebuild,
+  // Synchronous full rebuild, for the dev-hook capture flow: the normal path is a worker round trip,
+  // so `rebuild(); render()` would photograph the previous mesh.
+  rebuildSync() {
+    const d = dims(params, curve);
+    const oldShade = shade.geometry;
+    shade.geometry = creased(buildShade(params, curve, PREVIEW));
+    oldShade.dispose();
+    const oldFitter = fitter.geometry;
+    fitter.geometry = creased(buildFitter(params, curve));
+    oldFitter.dispose();
+    fitter.position.set(0, 0, Math.max(0, d.fitterZ - params.fitterThickness));
+    shadeCm3 = volumeCm3(shade.geometry);
+    fitterCm3 = volumeCm3(fitter.geometry);
+    lighting.update(params, d.height, d.maxR);
+    readout(d);
+    curveEditor.draw();
+    viewer.invalidate();
+  },
   dims: () => dims(params, curve),
   warnings: () => [...warnings(params, curve), ...fitterWarnings(params, curve)],
   maxRadius: () => maxRadius(curve),

@@ -14,7 +14,7 @@ import type { BufferGeometry } from "three";
 import { type Mat, scope, type Solid } from "parametric-kit/csg";
 import { type CtrlPt, sampleRadius } from "./curve.ts";
 import { sectionMin } from "./section.ts";
-import { dims, type Params } from "./params.ts";
+import { effectiveWall, type Params } from "./params.ts";
 import { annulus } from "./shapes.ts";
 
 export type FitterKind = Params["fitterKind"];
@@ -37,7 +37,7 @@ const MIN_BAND = 4; // never leave a band thinner than this between bore and rim
 
 export function fitterSpec(p: Params, curve: readonly CtrlPt[]): FitterSpec {
   const secMin = sectionMin(p.sectionKind, p.sides, p.sectionDepth);
-  const wall = dims(p, curve).effectiveWall;
+  const wall = effectiveWall(p);
   // The ring sits inside the shade's opening. secMin (not the max) so a lobed or star section still
   // clears the ring at its narrowest point.
   const shadeInner = sampleRadius(curve, p.fitterZ) * p.girth * secMin - wall;

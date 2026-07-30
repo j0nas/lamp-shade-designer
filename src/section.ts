@@ -101,11 +101,22 @@ export function makeSection(
 
 // Smallest radial multiplier over a full turn — the shell's thinnest point, needed to check that the
 // wall still fits inside the section.
+//
+// Cached on the same key as normFactor: dims(), warnings() and fitterSpec() all want this number and
+// all run several times per rebuild, and the uncached form is 512 sectionRadius() calls — each of
+// which built its own template-string cache key. Depends only on the three knobs, so it memoises for
+// free.
+const minCache = new Map<string, number>();
+
 export function sectionMin(kind: SectionKind, sides: number, depth: number, samples = 512): number {
+  const key = `${kind}|${sides}|${depth}|${samples}`;
+  const hit = minCache.get(key);
+  if (hit !== undefined) return hit;
+  // Resolve the knobs once rather than per sample, exactly as makeSection does.
+  const section = makeSection(kind, sides, depth);
   let m = Number.POSITIVE_INFINITY;
-  for (let k = 0; k < samples; k++) {
-    m = Math.min(m, sectionRadius(kind, sides, depth, (k / samples) * TAU));
-  }
+  for (let k = 0; k < samples; k++) m = Math.min(m, section((k / samples) * TAU));
+  minCache.set(key, m);
   return m;
 }
 
