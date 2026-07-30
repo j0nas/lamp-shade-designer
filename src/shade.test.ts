@@ -1,6 +1,5 @@
 // Geometry probes on the real solids. These catch what param math can't: a shell that isn't closed,
 // a wall offset the wrong way, holes that don't pierce, a section that pinches the surface.
-import type { BufferGeometry } from "three";
 import { beforeAll, describe, expect, test } from "vite-plus/test";
 import { initCSG } from "parametric-kit/csg";
 import { defaults } from "parametric-kit/params";
@@ -10,6 +9,7 @@ import { SECTION_KINDS } from "./section.ts";
 import { PERF_PATTERNS, PERF_SHAPES } from "./perforation.ts";
 import { dims, migrateStored, type Params, schema, warnings } from "./params.ts";
 import { buildShade, PREVIEW, qualityFor, shellMesh } from "./shade.ts";
+import { genusOf } from "./test-probes.ts";
 
 beforeAll(async () => {
   await initCSG();
@@ -17,15 +17,6 @@ beforeAll(async () => {
 
 const base = (over: Partial<Params> = {}): Params => ({ ...defaults(schema), ...over });
 const curve = familyCurve("empire");
-
-// Genus from the Euler characteristic. For a closed orientable surface every edge is shared by two
-// triangles, so E = 3F/2 and χ = V − F/2; genus = (2 − χ)/2. A tube is genus 1, and every hole
-// punched through the wall adds exactly one — which is a much stronger claim than "volume went down".
-function genusOf(g: BufferGeometry): number {
-  const V = g.getAttribute("position").count;
-  const F = (g.index?.count ?? 0) / 3;
-  return (2 - (V - F / 2)) / 2;
-}
 
 describe("the shell", () => {
   test("is a closed tube standing on the bed", () => {

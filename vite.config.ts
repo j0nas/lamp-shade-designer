@@ -1,6 +1,25 @@
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite-plus";
 
+// Version stamp for provenance: package version + short commit, baked in at build time so every
+// exported design file and STL header says exactly which app produced it. The try/catch covers
+// builds outside a git checkout; designs.ts additionally guards with typeof so plain-Node tests
+// never need the define at all.
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as {
+  version: string;
+};
+let sha = "dev";
+try {
+  sha = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+    .toString()
+    .trim();
+} catch {
+  /* tarball build — the package version alone still identifies the release */
+}
+
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(`${pkg.version}+${sha}`) },
   staged: {
     "*": "vp check --fix",
   },

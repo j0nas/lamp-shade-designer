@@ -7,7 +7,7 @@ import { initCSG } from "parametric-kit/csg";
 import { createStore, installPanelCollapse, renderPanel } from "parametric-kit/params";
 import { createViewer, creased, installAppHook } from "parametric-kit/viewer";
 import { createBuildClient, unpackGeometry } from "parametric-kit/worker";
-import { downloadBlob, downloadText, exportSTL } from "parametric-kit/export";
+import { downloadBlob, downloadText, stlBinary } from "parametric-kit/export";
 import {
   filamentGrams,
   filamentMetres,
@@ -37,6 +37,7 @@ import {
   makeDesign,
   sanitizeDesign,
   slugify,
+  stampStlHeader,
 } from "./designs.ts";
 import { buildShade, EXPORT, PREVIEW } from "./shade.ts";
 import type { BuildQuality, BuildReq, BuildRes } from "./build-protocol.ts";
@@ -416,12 +417,20 @@ const slug = () =>
     ...(params.perfPattern !== "none" && params.perfShape !== "circle" ? [params.perfShape] : []),
   ].join("-");
 
+// Provenance rides in the STL itself: the 80-byte header names the app version and design, so a
+// file found on disk next year can be traced back to the exact build that made it. The filename
+// carries the same stamp for humans; the header survives renaming.
+const downloadStl = (geom: BufferGeometry, base: string): void => {
+  const view = stampStlHeader(stlBinary(geom), `lamp-shade ${APP_VERSION} ${currentName()}`);
+  downloadBlob(`${base}-${slugify(APP_VERSION)}.stl`, new Blob([view], { type: "model/stl" }));
+};
+
 $("dl-shade-stl").addEventListener("click", () => {
-  exportSTL(buildShade(params, curve, EXPORT), `shade-${slug()}.stl`);
+  downloadStl(buildShade(params, curve, EXPORT), `shade-${slugify(currentName())}-${slug()}`);
 });
 
 $("dl-fitter-stl").addEventListener("click", () => {
-  exportSTL(buildFitter(params, curve), `fitter-${params.fitterKind}.stl`);
+  downloadStl(buildFitter(params, curve), `fitter-${slugify(currentName())}-${params.fitterKind}`);
 });
 
 // STEP is the one path that needs OpenCASCADE (~10.8 MB), so it is imported on first click only.

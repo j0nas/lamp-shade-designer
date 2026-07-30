@@ -1,0 +1,61 @@
+{
+  "format": "lamp-shade-design",
+  "version": 1,
+  "app": "0.0.0+dev",
+  "name": "Twisted star",
+  "savedAt": "2026-07-31T00:00:00.000Z",
+  "params": {
+    "height": 220,
+    "girth": 1.15,
+    "wall": 1.8,
+    "sectionKind": "star",
+    "sides": 6,
+    "sectionDepth": 0.15,
+    "twistDeg": 120,
+    "fluteCount": 0,
+    "fluteDepth": 2,
+    "waveCount": 0,
+    "waveDepth": 3,
+    "perfPattern": "hex",
+    "perfShape": "hex",
+    "perfAspect": 1,
+    "perfRot": 0,
+    "perfRows": 8,
+    "perfCols": 14,
+    "perfDia": 4,
+    "perfMargin": 16,
+    "perfGradient": 0,
+    "perfEven": true,
+    "bulbKind": "a60",
+    "watts": 8,
+    "bulbZ": 0.45,
+    "fitterKind": "ring",
+    "fitterBore": 40.5,
+    "fitterThickness": 3,
+    "fitterSpokes": 3,
+    "fitterZ": 1,
+    "vaseMode": false
+  },
+  "curve": [
+    {
+      "v": 0,
+      "r": 96
+    },
+    {
+      "v": 0.3,
+      "r": 64
+    },
+    {
+      "v": 0.5,
+      "r": 56
+    },
+    {
+      "v": 0.7,
+      "r": 64
+    },
+    {
+      "v": 1,
+      "r": 96
+    }
+  ]
+}
