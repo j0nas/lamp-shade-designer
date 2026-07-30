@@ -7,7 +7,7 @@ import { initCSG } from "parametric-kit/csg";
 import { createStore, installPanelCollapse, renderPanel } from "parametric-kit/params";
 import { createViewer, creased, installAppHook } from "parametric-kit/viewer";
 import { createBuildClient, unpackGeometry } from "parametric-kit/worker";
-import { downloadBlob, exportSTL } from "parametric-kit/export";
+import { downloadBlob, downloadText, exportSTL } from "parametric-kit/export";
 import {
   filamentGrams,
   filamentMetres,
@@ -28,6 +28,16 @@ import {
   smooth,
 } from "./curve.ts";
 import { dims, migrateStored, type Params, schema, warnings } from "./params.ts";
+import {
+  APP_VERSION,
+  createLibrary,
+  decodeDesignHash,
+  type DesignFile,
+  encodeDesignHash,
+  makeDesign,
+  sanitizeDesign,
+  slugify,
+} from "./designs.ts";
 import { buildShade, EXPORT, PREVIEW } from "./shade.ts";
 import type { BuildQuality, BuildReq, BuildRes } from "./build-protocol.ts";
 import { buildFitter, fitterSpec, fitterWarnings } from "./fitter.ts";
@@ -56,6 +66,19 @@ try {
 const store = createStore(schema, { key: "lamp-shade:params", version: 1 });
 const params: Params = store.load();
 let curve: CtrlPt[] = loadCurve();
+
+// A share link replaces the working copy — deliberately: the link IS the design being opened. The
+// hash is then stripped so a reload keeps subsequent edits instead of re-applying the link.
+{
+  const shared = decodeDesignHash(location.hash);
+  if (shared) {
+    Object.assign(params, shared.params);
+    curve = shared.curve;
+    store.save(params);
+    saveCurve(curve);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+}
 
 // --- viewer --------------------------------------------------------------------------------------
 // Shades are big compared with the kit's default part scale, so the shadow frustum and ground grow.
@@ -254,6 +277,110 @@ $("curve-reset").addEventListener(
   editCurve(() => familyCurve(familySelect.value)),
 );
 
+// --- design library ------------------------------------------------------------------------------
+const library = createLibrary();
+const designSelect = $<HTMLSelectElement>("design-select");
+const designName = $<HTMLInputElement>("design-name");
+
+function refreshDesigns(selected = ""): void {
+  designSelect.innerHTML = "";
+  // A disabled placeholder so the select can sit on "nothing loaded" — the working copy is its own
+  // state, not implicitly the first saved design.
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "— load a design —";
+  blank.disabled = true;
+  designSelect.append(blank);
+  for (const d of library.list()) {
+    const opt = document.createElement("option");
+    opt.value = d.name;
+    opt.textContent = d.name;
+    designSelect.append(opt);
+  }
+  designSelect.value = selected;
+}
+
+// Mirrors the #reset-all handler: assign into the live objects, persist, resync the panel, rebuild.
+function applyDesign(d: DesignFile): void {
+  Object.assign(params, d.params);
+  curve = d.curve.map((pt) => ({ ...pt }));
+  store.save(params);
+  saveCurve(curve);
+  designName.value = d.name;
+  panel.sync();
+  scheduleRebuild();
+}
+
+const currentName = (): string => designName.value.trim() || designSelect.value || "untitled";
+
+const saveAs = (name: string): void => {
+  const d = makeDesign(name, params, curve);
+  library.put(d);
+  refreshDesigns(d.name);
+  designName.value = d.name;
+};
+
+$("design-save").addEventListener("click", () => saveAs(currentName()));
+$("design-duplicate").addEventListener("click", () => saveAs(`${currentName()} copy`));
+
+$("design-delete").addEventListener("click", () => {
+  const name = designSelect.value;
+  if (!name) return;
+  library.remove(name);
+  refreshDesigns(); // the working copy stays on screen; delete only removes the saved entry
+});
+
+designSelect.addEventListener("change", () => {
+  const d = library.get(designSelect.value);
+  if (d) applyDesign(d);
+});
+
+$("design-export").addEventListener("click", () => {
+  const d = makeDesign(currentName(), params, curve);
+  downloadText(`lamp-shade-${slugify(d.name)}.json`, JSON.stringify(d, null, 2));
+});
+
+// Import goes through the same sanitizer as every other design source; a file that isn't a design
+// reports on the button itself, the same transient pattern the STEP button uses.
+const importBtn = $<HTMLButtonElement>("design-import");
+const importFile = $<HTMLInputElement>("design-file");
+importBtn.addEventListener("click", () => importFile.click());
+importFile.addEventListener("change", async () => {
+  const file = importFile.files?.[0];
+  importFile.value = ""; // so picking the same file again still fires change
+  if (!file) return;
+  let d: DesignFile | null = null;
+  try {
+    d = sanitizeDesign(JSON.parse(await file.text()));
+  } catch {
+    /* unreadable file or invalid JSON — reported below exactly like a wrong envelope */
+  }
+  if (!d) {
+    const label = importBtn.textContent;
+    importBtn.textContent = "Not a design file";
+    setTimeout(() => (importBtn.textContent = label), 2500);
+    return;
+  }
+  library.put(d);
+  refreshDesigns(d.name);
+  applyDesign(d);
+});
+
+const shareUrl = (): string =>
+  `${location.origin}${location.pathname}#${encodeDesignHash(makeDesign(currentName(), params, curve))}`;
+
+const linkBtn = $<HTMLButtonElement>("design-link");
+linkBtn.addEventListener("click", () => {
+  const label = linkBtn.textContent;
+  navigator.clipboard.writeText(shareUrl()).then(
+    () => (linkBtn.textContent = "Copied!"),
+    () => (linkBtn.textContent = "Copy failed"),
+  );
+  setTimeout(() => (linkBtn.textContent = label), 2000);
+});
+
+refreshDesigns();
+
 // --- view controls (app chrome: deliberately not schema params) -----------------------------------
 const viewMode = $<HTMLSelectElement>("view-mode");
 viewMode.addEventListener("change", () => {
@@ -390,6 +517,10 @@ installAppHook({
   },
   dims: () => dims(params, curve),
   warnings: () => [...warnings(params, curve), ...fitterWarnings(params, curve)],
+  library,
+  shareUrl,
+  applyDesign,
+  version: APP_VERSION,
   maxRadius: () => maxRadius(curve),
   panel,
   render: () => viewer.render(),

@@ -11,6 +11,10 @@ export type CtrlPt = { v: number; r: number };
 
 export const MIN_R = 4; // mm; below this the wall has nowhere to go
 export const MAX_R = 400;
+// The editor can't realistically produce more points than this, but an imported file or a share
+// link can claim anything — and every sample walks the array, so an unbounded curve is an
+// unbounded rebuild. Sanitize caps it.
+export const MAX_CURVE_PTS = 64;
 
 // Named starting points. Concrete millimetre radii — `girth` scales them, so these read as a
 // default ~200 mm-tall shade.
@@ -188,9 +192,14 @@ export function sanitizeCurve(raw: unknown): CtrlPt[] {
   // Collapse points that landed on top of each other, then force the rims to exactly 0 and 1.
   const dedup = pts.filter((p, i) => i === 0 || p.v - pts[i - 1].v > 1e-4);
   if (dedup.length < 2) return familyCurve(DEFAULT_FAMILY);
-  dedup[0].v = 0;
-  dedup[dedup.length - 1].v = 1;
-  return dedup;
+  // Cap oversized imports: keep the first MAX−1 points plus the top rim, so both rims survive.
+  const capped =
+    dedup.length > MAX_CURVE_PTS
+      ? [...dedup.slice(0, MAX_CURVE_PTS - 1), dedup[dedup.length - 1]]
+      : dedup;
+  capped[0].v = 0;
+  capped[capped.length - 1].v = 1;
+  return capped;
 }
 
 const CURVE_KEY = "lamp-shade:curve:v1";

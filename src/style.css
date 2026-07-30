@@ -272,6 +272,29 @@ input[type="checkbox"] {
   color: var(--text-dim);
 }
 
+/* ---------- design library ---------- */
+
+/* Mirrors the .num value box so the name field reads as part of the same control family. */
+#design-name {
+  width: 100%;
+  margin: 2px 0 8px;
+  padding: 4px 6px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  font: inherit;
+}
+
+#design-name:focus {
+  border-color: var(--accent-soft);
+  outline: none;
+}
+
+#designs-group .curve-tools + .curve-tools {
+  margin-top: 6px;
+}
+
 /* ---------- silhouette editor ---------- */
 
 #curve {

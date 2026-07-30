@@ -4,6 +4,7 @@ import {
   DEFAULT_FAMILY,
   FAMILY_NAMES,
   familyCurve,
+  MAX_CURVE_PTS,
   MAX_R,
   MIN_R,
   maxRadius,
@@ -198,5 +199,15 @@ describe("sanitizeCurve (untrusted localStorage)", () => {
 
   test("fewer than two usable points falls back to the default family", () => {
     expect(sanitizeCurve([{ v: 0, r: 100 }])).toEqual(familyCurve(DEFAULT_FAMILY));
+  });
+
+  test("caps an oversized curve with both rims pinned", () => {
+    // The editor can't make one this dense, but an imported file or share link can claim anything,
+    // and every sample walks the array.
+    const huge = Array.from({ length: 500 }, (_, i) => ({ v: i / 499, r: 60 }));
+    const out = sanitizeCurve(huge);
+    expect(out).toHaveLength(MAX_CURVE_PTS);
+    expect(out[0].v).toBe(0);
+    expect(out[out.length - 1].v).toBe(1);
   });
 });

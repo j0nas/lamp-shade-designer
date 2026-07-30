@@ -14,6 +14,27 @@
     <aside id="panel">
       <h1>Lamp Shade</h1>
 
+      <!-- Design library: named save/load, JSON export/import, share links. App chrome, not schema. -->
+      <section class="group" id="designs-group">
+        <h2>Designs</h2>
+        <div class="sel">
+          <label for="design-select">Saved</label>
+          <select id="design-select"></select>
+        </div>
+        <input id="design-name" type="text" placeholder="Design name" aria-label="Design name" />
+        <div class="curve-tools">
+          <button type="button" id="design-save">Save</button>
+          <button type="button" id="design-duplicate">Duplicate</button>
+          <button type="button" id="design-delete">Delete</button>
+        </div>
+        <div class="curve-tools">
+          <button type="button" id="design-export">Export</button>
+          <button type="button" id="design-import">Import</button>
+          <button type="button" id="design-link">Copy link</button>
+        </div>
+        <input id="design-file" type="file" accept=".json,application/json" hidden />
+      </section>
+
       <!-- Silhouette editor: app-owned, not a schema param (a curve is control points, not a scalar). -->
       <section class="group" id="silhouette-group">
         <h2>Silhouette</h2>
