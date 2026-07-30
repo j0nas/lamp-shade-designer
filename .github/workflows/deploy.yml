@@ -1,15 +1,38 @@
-name: Deploy
+name: Deploy to GitHub Pages
+
+# This repo is the source of truth for the lamp shade designer. Every push to main
+# builds the app and publishes it to GitHub Pages; jonas-jensen.com embeds the live
+# deploy by proxying /apps/lamp-shade/* to the Pages URL, so pushing here is what
+# ships the change to the desktop — nothing is re-vendored by hand.
+#
+# The app also rebuilds when the kit changes: the parametric-kit repo dispatches a
+# `kit-updated` event on every push to its main, which fires this workflow via the
+# repository_dispatch trigger below. Because we build the kit from source in CI (see
+# the sibling checkout below), that re-run picks up the new kit code — no bump here.
+#
+# The app depends on the sibling parametric-kit via a `link:../parametric-kit`
+# path, and imports the kit's built dist/ (which is gitignored, so it must be
+# rebuilt in CI). actions/checkout can only write inside $GITHUB_WORKSPACE, so we
+# can't recreate the local `../parametric-kit` sibling above the workspace.
+# Instead we check out BOTH repos into subdirectories (app/ and parametric-kit/):
+# from app/, `../parametric-kit` then resolves to the sibling checkout, exactly
+# like the local layout. We build the kit first so its dist/ exists before the
+# app installs (link:) and builds against it.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  repository_dispatch:
+    types: [kit-updated]
 
+# Least privilege for the Pages deployment.
 permissions:
   contents: read
   pages: write
   id-token: write
 
+# One deploy at a time; a newer push supersedes an in-flight run.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -18,42 +41,51 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      # parametric-kit is a link: dependency on a sibling checkout, so CI needs it beside this repo
-      # and needs its dist built — apps import dist/, not src/.
-      - name: Check out parametric-kit alongside
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          path: app
+      - uses: actions/checkout@v6
         with:
           repository: j0nas/parametric-kit
-          path: .kit-checkout
-
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+          path: parametric-kit
+      - uses: pnpm/action-setup@v6
         with:
-          node-version-file: .node-version
+          # No root package.json here (two sibling checkouts), and this repo declares
+          # pnpm under devEngines rather than the `packageManager` field action-setup
+          # reads — so pin the version explicitly.
+          version: 11.18.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: app/.node-version
           cache: pnpm
-
-      - name: Build the kit
+          cache-dependency-path: |
+            app/pnpm-lock.yaml
+            parametric-kit/pnpm-lock.yaml
+      # Build the kit first: the app's link: dep imports its dist/, which is
+      # gitignored and must be produced here.
+      - name: Build parametric-kit
+        working-directory: parametric-kit
         run: |
-          mv .kit-checkout ../parametric-kit
-          cd ../parametric-kit
           pnpm install --frozen-lockfile
           pnpm run build
-
-      - run: pnpm install --frozen-lockfile
-
-      # Tests gate the deploy: the geometry probes (genus == holes + 1, positive orientation) and the
-      # dual-kernel fitter equivalence check are exactly what must not ship broken.
-      # No --run here: the package script is already `vp test --run`, and vitest rejects the flag
-      # twice with `Expected a single value for option "--run"`.
-      - run: pnpm test
-
-      - run: pnpm run build
-
+      - name: Install app
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+      # Tests gate the deploy: the geometry probes (genus == holes + 1, positive
+      # orientation) and the dual-kernel fitter equivalence check are exactly what
+      # must not ship broken.
+      - name: Test app
+        working-directory: app
+        # The `test` script is already `vp test --run`; don't append another
+        # --run (vitest rejects the duplicated single-value option).
+        run: pnpm test
+      - name: Build app
+        working-directory: app
+        run: pnpm run build
+      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: app/dist
 
   deploy:
     needs: build
