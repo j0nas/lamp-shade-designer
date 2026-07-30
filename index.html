@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lamp Shade Designer</title>
+  </head>
+  <body>
+    <!-- Canvas host: the viewer fills this. -->
+    <div id="app"></div>
+
+    <!-- Control overlay. #controls is left empty for renderPanel(); everything else is app chrome. -->
+    <aside id="panel">
+      <h1>Lamp Shade</h1>
+
+      <!-- Silhouette editor: app-owned, not a schema param (a curve is control points, not a scalar). -->
+      <section class="group" id="silhouette-group">
+        <h2>Silhouette</h2>
+        <div class="sel">
+          <label for="family">Family</label>
+          <select id="family"></select>
+        </div>
+        <canvas id="curve" width="300" height="220" aria-label="Silhouette profile editor"></canvas>
+        <div class="curve-tools">
+          <button type="button" id="curve-smooth">Smooth</button>
+          <button type="button" id="curve-mirror">Mirror</button>
+          <button type="button" id="curve-reset">Reset</button>
+        </div>
+        <p class="sub">
+          Drag a point to reshape. Double-click the curve to add a point, a point to remove it.
+        </p>
+      </section>
+
+      <!-- renderPanel() fills this with the schema groups. -->
+      <div id="controls"></div>
+
+      <!-- View controls: app chrome, must not persist or dirty presets. -->
+      <section class="group" id="view-group">
+        <h2>View</h2>
+        <div class="sel">
+          <label for="view-mode">Mode</label>
+          <select id="view-mode">
+            <option value="cad">CAD (lit for form)</option>
+            <option value="lamp">Lamp on (cast light)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="dim">Room brightness</label>
+          <input id="dim" type="range" min="0" max="1" step="0.02" value="0.12" />
+          <output id="dim-out">0.12</output>
+        </div>
+        <div class="toggle">
+          <label><input id="show-bulb" type="checkbox" checked /> Show bulb</label>
+        </div>
+        <div class="toggle">
+          <label><input id="show-fitter" type="checkbox" checked /> Show fitter</label>
+        </div>
+        <div class="toggle">
+          <label><input id="section-cut" type="checkbox" /> Section cut</label>
+        </div>
+      </section>
+
+      <div id="dims"></div>
+      <div id="warnings"></div>
+
+      <div id="downloads">
+        <button type="button" id="dl-shade-stl">Shade STL</button>
+        <button type="button" id="dl-shade-3mf">Shade 3MF</button>
+        <button type="button" id="dl-fitter-stl">Fitter STL</button>
+        <button type="button" id="dl-fitter-step">Fitter STEP</button>
+      </div>
+    </aside>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,66 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # parametric-kit is a link: dependency on a sibling checkout, so CI needs it beside this repo
+      # and needs its dist built — apps import dist/, not src/.
+      - name: Check out parametric-kit alongside
+        uses: actions/checkout@v4
+        with:
+          repository: j0nas/parametric-kit
+          path: .kit-checkout
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Build the kit
+        run: |
+          mv .kit-checkout ../parametric-kit
+          cd ../parametric-kit
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - run: pnpm install --frozen-lockfile
+
+      # Tests gate the deploy: the geometry probes (genus == holes + 1, positive orientation) and the
+      # dual-kernel fitter equivalence check are exactly what must not ship broken.
+      # No --run here: the package script is already `vp test --run`, and vitest rejects the flag
+      # twice with `Expected a single value for option "--run"`.
+      - run: pnpm test
+
+      - run: pnpm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

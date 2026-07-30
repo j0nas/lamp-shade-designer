@@ -1,0 +1,17 @@
+allowBuilds:
+  sharp: false # transitive via manifold-3d's gltf tooling; we only use the core wasm, no native build
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.6
+  vite-plus: 0.2.6
+overrides:
+  vite: "catalog:"
+# The kit ships vite/vitest as peers; allowing any version is what lets the project-local vp win.
+# A globally-installed vp drags in a second vitest and crashes with
+# "Cannot read properties of undefined (reading 'config')" — always run tests via `pnpm test`.
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"

@@ -1,0 +1,35 @@
+{
+  "name": "lamp-shade-designer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "tsc && vp build",
+    "preview": "vp preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vp test --run",
+    "test:watch": "vp test",
+    "prepare": "vp config"
+  },
+  "dependencies": {
+    "manifold-3d": "3.5.1",
+    "parametric-kit": "link:../parametric-kit",
+    "replicad": "^0.23.1",
+    "replicad-opencascadejs": "^0.23.0",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "typescript": "~6.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.18.0",
+      "onFail": "download"
+    }
+  }
+}
