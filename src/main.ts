@@ -7,7 +7,7 @@ import { initCSG } from "parametric-kit/csg";
 import { createStore, installPanelCollapse, renderPanel } from "parametric-kit/params";
 import { createViewer, creased, installAppHook } from "parametric-kit/viewer";
 import { createBuildClient, unpackGeometry } from "parametric-kit/worker";
-import { downloadBlob, downloadText, stlBinary } from "parametric-kit/export";
+import { downloadBlob, downloadText } from "parametric-kit/export";
 import {
   filamentGrams,
   filamentMetres,
@@ -21,14 +21,16 @@ import {
   DEFAULT_FAMILY,
   FAMILY_NAMES,
   familyCurve,
+  familyOf,
   loadCurve,
   maxRadius,
   mirrorV,
   saveCurve,
   smooth,
 } from "./curve.ts";
-import { dims, effectiveWall, migrateStored, type Params, schema, warnings } from "./params.ts";
-import { applyOverhangColors, overhangBands, overhangWarnings } from "./overhang.ts";
+import { dims, effectiveWall, migrateStored, type Params, schema } from "./params.ts";
+import { applyOverhangColors, overhangBands } from "./overhang.ts";
+import { allWarnings } from "./lint.ts";
 import {
   APP_VERSION,
   createLibrary,
@@ -38,13 +40,18 @@ import {
   makeDesign,
   sanitizeDesign,
   slugify,
-  stampStlHeader,
 } from "./designs.ts";
-import { buildShade, EXPORT, PREVIEW } from "./shade.ts";
-import type { BuildQuality, BuildReq, BuildRes } from "./build-protocol.ts";
-import { buildFitter, fitterSpec, fitterWarnings } from "./fitter.ts";
+import { buildShade, PREVIEW } from "./shade.ts";
+import type { BuildQuality, ExportPart, WorkerReq, WorkerRes } from "./build-protocol.ts";
+import { buildFitter, fitterSpec } from "./fitter.ts";
 import { installCurveEditor } from "./curve-editor.ts";
-import { createLighting, setShadePerfPreview, shadeMesh, type ViewMode } from "./lit.ts";
+import {
+  createLighting,
+  setSectionCut,
+  setShadePerfPreview,
+  shadeMesh,
+  type ViewMode,
+} from "./lit.ts";
 import { createPerfPreview } from "./perf-texture.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -129,7 +136,7 @@ function recolorShade(): void {
 // That is what makes dragging feel live even on a design whose perforated build takes seconds.
 const SETTLE_MS = 180;
 
-const client = createBuildClient<BuildReq, BuildRes>(
+const client = createBuildClient<WorkerReq, WorkerRes>(
   () => new Worker(new URL("./build-worker.ts", import.meta.url), { type: "module" }),
 );
 
@@ -142,8 +149,10 @@ let shadeCm3 = 0;
 let fitterCm3 = 0;
 
 // Snapshot: the panel mutates `params` in place, and the request may be posted a tick later.
+const snapshot = () => ({ params: { ...params }, curve: curve.map((pt) => ({ ...pt })) });
+
 const request = (quality: BuildQuality): void => {
-  client.request({ params: { ...params }, curve: curve.map((pt) => ({ ...pt })), quality });
+  client.request({ kind: "build", ...snapshot(), quality });
 };
 
 let chromeQueued = false;
@@ -165,10 +174,11 @@ function scheduleRebuild(): void {
 }
 
 client.onResult((res) => {
+  if (res.kind !== "build") return; // exports have their own client; belt-and-braces
   const d = dims(params, curve);
 
   swapGeom(shade, creased(unpackGeometry(res.shade)));
-  swapGeom(fitter, creased(unpackGeometry(res.fitter)));
+  if (res.fitter) swapGeom(fitter, creased(unpackGeometry(res.fitter))); // drafts skip the fitter
   recolorShade(); // drafts included — the heatmap stays live mid-drag
   // The fitter is BUILT flat on the bed (print orientation) and only lifted for display. Seat it so
   // its TOP face is level with the mount height, i.e. recessed into the opening rather than perched
@@ -187,7 +197,9 @@ client.onResult((res) => {
     shadeCm3 = res.shadeCm3;
     fitterCm3 = res.fitterCm3;
   }
-  lastMs = res.timings.total;
+  // The whole worker round trip, not just the shade: the phase split stays shade-only, but the
+  // headline number must not understate what a rebuild actually costs.
+  lastMs = res.timings.total + res.fitterMs;
   lastQuality = res.quality;
 
   lighting.update(params, d.height, d.maxR);
@@ -221,14 +233,7 @@ function readout(d: ReturnType<typeof dims>): void {
     `bulb gap <strong>${d.bulbGap.toFixed(0)} mm</strong><br>${badges}` +
     `<br><span class="perf">${lastQuality} rebuild ${lastMs.toFixed(0)} ms</span>`;
 
-  // Overhang lint is composed HERE rather than inside params.warnings(): shade.ts (which computes
-  // the surface) already imports params.ts, so routing it through params would close a cycle.
-  const all = [
-    ...warnings(params, curve, d),
-    ...fitterWarnings(params, curve),
-    ...overhangWarnings(params, curve),
-  ];
-  $("warnings").innerHTML = all
+  $("warnings").innerHTML = allWarnings(params, curve, d)
     .map((w) => `<div class="${w.bad ? "bad" : ""}">${w.text}</div>`)
     .join("");
 }
@@ -248,7 +253,8 @@ const panel = renderPanel($("controls"), schema, params, {
     // Rotating an unstretched circle is a no-op, so the knob only appears once it can do something.
     {
       id: "perforation-rot",
-      visibleWhen: (p) => p.perfPattern !== "none" && (p.perfShape !== "circle" || p.perfAspect > 1),
+      visibleWhen: (p) =>
+        p.perfPattern !== "none" && (p.perfShape !== "circle" || p.perfAspect > 1),
     },
     { id: "perforation-grid", visibleWhen: (p) => p.perfPattern !== "none" },
     { id: "light", title: "Light" },
@@ -267,6 +273,7 @@ const curveEditor = installCurveEditor($<HTMLCanvasElement>("curve"), {
   set: (pts) => {
     curve = pts;
     saveCurve(curve);
+    syncFamily();
   },
   onChange: scheduleRebuild,
   bands: () =>
@@ -279,13 +286,31 @@ const curveEditor = installCurveEditor($<HTMLCanvasElement>("curve"), {
 });
 
 const familySelect = $<HTMLSelectElement>("family");
+{
+  // Shown whenever the curve is not literally a named family — edited, imported, loaded. Hidden
+  // from the dropdown itself; only ever selected programmatically by syncFamily().
+  const custom = document.createElement("option");
+  custom.value = "";
+  custom.disabled = true;
+  custom.hidden = true;
+  custom.textContent = "Custom";
+  familySelect.append(custom);
+}
 for (const name of FAMILY_NAMES) {
   const opt = document.createElement("option");
   opt.value = name;
   opt.textContent = name[0].toUpperCase() + name.slice(1);
   familySelect.append(opt);
 }
-familySelect.value = DEFAULT_FAMILY;
+
+// The select displays as state, so it must tell the truth: the family the curve actually is, or
+// "Custom" the moment an edit moves a point. It used to keep showing the last pick over whatever
+// curve a design load or a drag had put on screen.
+const syncFamily = (): void => {
+  familySelect.value = familyOf(curve) ?? "";
+};
+syncFamily();
+
 familySelect.addEventListener("change", () => {
   curve = familyCurve(familySelect.value);
   saveCurve(curve);
@@ -295,6 +320,7 @@ familySelect.addEventListener("change", () => {
 const editCurve = (fn: (pts: CtrlPt[]) => CtrlPt[]) => () => {
   curve = fn(curve);
   saveCurve(curve);
+  syncFamily(); // smoothing can leave a family; mirroring a drum still is one — let the data say
   scheduleRebuild();
 };
 $("curve-smooth").addEventListener("click", editCurve(smooth));
@@ -334,6 +360,7 @@ function applyDesign(d: DesignFile): void {
   store.save(params);
   saveCurve(curve);
   designName.value = d.name;
+  syncFamily();
   panel.sync();
   scheduleRebuild();
 }
@@ -433,9 +460,31 @@ $<HTMLInputElement>("show-fitter").addEventListener("change", (ev) => {
   viewer.invalidate();
 });
 
+// Costs nothing until a material actually carries planes, so it is switched on unconditionally.
+viewer.renderer.localClippingEnabled = true;
+$<HTMLInputElement>("section-cut").addEventListener("change", (ev) => {
+  setSectionCut([shade, fitter], (ev.target as HTMLInputElement).checked);
+  viewer.invalidate();
+});
+
 // --- downloads -----------------------------------------------------------------------------------
-// Export always rebuilds at full resolution: what you download must not depend on the preview
-// quality you happened to be looking at.
+// Exports rebuild at full resolution on their own dedicated worker: what you download must not
+// depend on the preview quality you happened to be looking at, and a seconds-long dense export
+// must neither freeze the tab (the old main-thread path did) nor queue against live drag rebuilds
+// (sharing the interactive worker would). Provenance rides in the file itself — the STL header,
+// the 3MF metadata — stamped worker-side; the filename repeats it for humans and survives nothing,
+// the header survives renaming.
+//
+// One export at a time: the worker client is latest-wins by design, so a second concurrent
+// request would silently supersede the first. The buttons disable as a set instead.
+const exportClient = createBuildClient<WorkerReq, WorkerRes>(
+  () => new Worker(new URL("./build-worker.ts", import.meta.url), { type: "module" }),
+);
+
+const exportButtons = ["dl-shade-stl", "dl-shade-3mf", "dl-fitter-stl"].map((id) =>
+  $<HTMLButtonElement>(id),
+);
+
 const slug = () =>
   [
     params.sectionKind,
@@ -444,20 +493,67 @@ const slug = () =>
     ...(params.perfPattern !== "none" && params.perfShape !== "circle" ? [params.perfShape] : []),
   ].join("-");
 
-// Provenance rides in the STL itself: the 80-byte header names the app version and design, so a
-// file found on disk next year can be traced back to the exact build that made it. The filename
-// carries the same stamp for humans; the header survives renaming.
-const downloadStl = (geom: BufferGeometry, base: string): void => {
-  const view = stampStlHeader(stlBinary(geom), `lamp-shade ${APP_VERSION} ${currentName()}`);
-  downloadBlob(`${base}-${slugify(APP_VERSION)}.stl`, new Blob([view], { type: "model/stl" }));
-};
+let exportJob: { filename: string; mime: string; button: HTMLButtonElement; label: string } | null =
+  null;
 
-$("dl-shade-stl").addEventListener("click", () => {
-  downloadStl(buildShade(params, curve, EXPORT), `shade-${slugify(currentName())}-${slug()}`);
+function requestExport(
+  button: HTMLButtonElement,
+  part: ExportPart,
+  filename: string,
+  mime: string,
+) {
+  if (exportJob) return;
+  exportJob = { filename, mime, button, label: button.textContent ?? "" };
+  for (const b of exportButtons) b.disabled = true;
+  button.textContent = "Building…";
+  exportClient.request({ kind: "export", part, ...snapshot(), name: currentName() });
+}
+
+function finishExport(failed: boolean): void {
+  const job = exportJob;
+  if (!job) return;
+  exportJob = null;
+  for (const b of exportButtons) b.disabled = false;
+  job.button.textContent = failed ? "Export failed" : job.label;
+  if (failed) setTimeout(() => (job.button.textContent = job.label), 2500);
+}
+
+exportClient.onResult((res) => {
+  if (res.kind !== "export" || !exportJob) return;
+  downloadBlob(exportJob.filename, new Blob([res.bytes], { type: exportJob.mime }));
+  finishExport(false);
 });
 
-$("dl-fitter-stl").addEventListener("click", () => {
-  downloadStl(buildFitter(params, curve), `fitter-${slugify(currentName())}-${params.fitterKind}`);
+exportClient.onError((message) => {
+  console.error("export failed", message);
+  finishExport(true);
+});
+
+$("dl-shade-stl").addEventListener("click", (ev) => {
+  requestExport(
+    ev.currentTarget as HTMLButtonElement,
+    "shade-stl",
+    `shade-${slugify(currentName())}-${slug()}-${slugify(APP_VERSION)}.stl`,
+    "model/stl",
+  );
+});
+
+$("dl-shade-3mf").addEventListener("click", (ev) => {
+  requestExport(
+    ev.currentTarget as HTMLButtonElement,
+    "shade-3mf",
+    `shade-${slugify(currentName())}-${slug()}-${slugify(APP_VERSION)}.3mf`,
+    "model/3mf",
+  );
+});
+
+$("dl-fitter-stl").addEventListener("click", (ev) => {
+  requestExport(
+    ev.currentTarget as HTMLButtonElement,
+    "fitter-stl",
+    `fitter-${slugify(currentName())}-${params.fitterKind}-${slugify(APP_VERSION)}.stl`,
+    "model/stl",
+  );
 });
 
 // STEP is the one path that needs OpenCASCADE (~10.8 MB), so it is imported on first click only.
@@ -484,20 +580,15 @@ stepBtn.addEventListener("click", async () => {
   stepBtn.textContent = label;
 });
 
-// 3MF is not wired yet — STL covers the same slicers meanwhile.
-const mfBtn = $<HTMLButtonElement>("dl-shade-3mf");
-mfBtn.disabled = true;
-mfBtn.title = "Not implemented yet — use Shade STL";
-
 // Factory reset: params, silhouette and family back to first-run state, persisted so a reload stays
 // reset. View chrome (mode, brightness, toggles) is deliberately left alone — it frames the design
 // but isn't part of it.
 $("reset-all").addEventListener("click", () => {
   Object.assign(params, store.defaults);
   store.save(params);
-  familySelect.value = DEFAULT_FAMILY;
   curve = familyCurve(DEFAULT_FAMILY);
   saveCurve(curve);
+  syncFamily();
   panel.sync();
   scheduleRebuild();
 });
@@ -553,11 +644,7 @@ installAppHook({
     viewer.invalidate();
   },
   dims: () => dims(params, curve),
-  warnings: () => [
-    ...warnings(params, curve),
-    ...fitterWarnings(params, curve),
-    ...overhangWarnings(params, curve),
-  ],
+  warnings: () => allWarnings(params, curve),
   library,
   shareUrl,
   applyDesign,

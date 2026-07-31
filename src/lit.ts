@@ -15,18 +15,21 @@ import {
   type BufferGeometry,
   Color,
   type Light,
+  type Material,
   Mesh,
   MeshDepthMaterial,
   MeshDistanceMaterial,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
   type Object3D,
+  Plane,
   PlaneGeometry,
   PointLight,
   RGBADepthPacking,
   type Scene,
   SphereGeometry,
   type Texture,
+  Vector3,
 } from "three";
 import { BULBS, type Params } from "./params.ts";
 
@@ -97,13 +100,16 @@ export function createLighting(scene: Scene): Lighting {
   // Floor and back wall to catch the cast pattern. Standard lit surfaces rather than the kit's
   // shadow-catcher, because here we want to see the LIGHT, not just the shadow. Kept mid-grey, not
   // near-black: the whole point is that the perforation pattern is legible where it lands.
+  // ONE unit plane, shared and scaled per frame in apply() — apply() runs on every param change,
+  // so sizing by geometry reallocation would churn two GPU buffers per drag frame.
   const surfaceMat = new MeshStandardMaterial({ color: 0x59545f, roughness: 0.95 });
-  const floor = new Mesh(new PlaneGeometry(1, 1), surfaceMat);
+  const planeGeom = new PlaneGeometry(1, 1);
+  const floor = new Mesh(planeGeom, surfaceMat);
   floor.receiveShadow = true;
   floor.visible = false;
   scene.add(floor);
 
-  const wall = new Mesh(new PlaneGeometry(1, 1), surfaceMat);
+  const wall = new Mesh(planeGeom, surfaceMat);
   wall.receiveShadow = true;
   wall.visible = false;
   scene.add(wall);
@@ -178,11 +184,9 @@ export function createLighting(scene: Scene): Lighting {
         (0.12 + thinness * 0.75) * Math.min(2.2, 0.45 + Math.sqrt(p.watts) / 3.4);
 
       const reach = Math.max(lastR * 6, lastH * 3);
-      floor.geometry.dispose();
-      floor.geometry = new PlaneGeometry(reach, reach);
+      floor.scale.set(reach, reach, 1);
       floor.position.set(0, 0, -0.4); // just under the shade so it never z-fights the bottom rim
-      wall.geometry.dispose();
-      wall.geometry = new PlaneGeometry(reach, reach * 0.8);
+      wall.scale.set(reach, reach * 0.8, 1);
       wall.rotation.set(Math.PI / 2, 0, 0);
       wall.position.set(0, lastR * 2.6, (reach * 0.8) / 2 - 0.4);
     } else {
@@ -230,8 +234,7 @@ export function createLighting(scene: Scene): Lighting {
       for (const o of [room, bulbLight, bulbMesh, floor, wall]) scene.remove(o);
       bulbMesh.geometry.dispose();
       (bulbMesh.material as MeshStandardMaterial).dispose();
-      floor.geometry.dispose();
-      wall.geometry.dispose();
+      planeGeom.dispose();
       surfaceMat.dispose();
       shadeMaterial.dispose();
       fitterMaterial.dispose();
@@ -251,6 +254,31 @@ export function shadeMesh(geom: BufferGeometry, material: MeshPhysicalMaterial):
   m.customDepthMaterial = new MeshDepthMaterial({ depthPacking: RGBADepthPacking });
   m.customDistanceMaterial = new MeshDistanceMaterial();
   return m;
+}
+
+// The section-cut view: a fixed vertical plane through the axis, clipping away half the model so
+// wall thickness, the fitter seat and the bulb clearance can be inspected in true section. One
+// shared immutable plane — Z-up, so a vertical cut is a plane whose normal lies in XY; the user
+// orbits rather than the plane moving.
+const SECTION_PLANE = new Plane(new Vector3(0, -1, 0), 0); // keeps y ≤ 0
+
+// Applied to every material each mesh renders with — surface, depth pass, distance pass, exactly
+// the set setShadePerfPreview touches — plus clipShadows, so lamp mode's cast light shows the cut
+// too instead of the shadow of the whole shade. Change-guarded: toggling clipping recompiles the
+// shader, and this runs from a UI listener that can fire repeatedly.
+export function setSectionCut(meshes: Mesh[], on: boolean): void {
+  for (const mesh of meshes) {
+    const mats = [mesh.material, mesh.customDepthMaterial, mesh.customDistanceMaterial] as (
+      | Material
+      | undefined
+    )[];
+    for (const mat of mats) {
+      if (!mat || (mat.clippingPlanes?.length ?? 0) === (on ? 1 : 0)) continue;
+      mat.clippingPlanes = on ? [SECTION_PLANE] : null;
+      mat.clipShadows = on;
+      mat.needsUpdate = true; // the clipping-plane count changes the compiled program
+    }
+  }
 }
 
 // Toggle the drag preview's perforation on the shade: the alpha map + test go on every material the

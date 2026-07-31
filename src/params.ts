@@ -6,6 +6,7 @@
 import { defineParams, num, pick, toggle, type Infer } from "parametric-kit/params";
 import { type CtrlPt, maxRadius, minRadius, sampleRadius } from "./curve.ts";
 import { SECTION_KINDS, SECTION_LABELS, sectionMin, type SectionKind } from "./section.ts";
+import { minSurfaceRadiusAt } from "./surface.ts";
 import {
   PERF_LABELS,
   PERF_PATTERNS,
@@ -290,6 +291,52 @@ function countHoles(p: Params, curve: readonly CtrlPt[]): number {
   return n;
 }
 
+// Glass-to-plastic clearance: the smallest distance from the bulb envelope to the shade's INNER
+// face over the bulb's vertical span. The radius is the modulated minimum (section, flutes and
+// waves all included — flutes cut real millimetres the silhouette doesn't show), and the wall is
+// subtracted because the inner face, not the outer, is what a bulb can touch.
+//
+// Single-slot memo in the countHoles() pattern: with flutes on, the modulated minimum walks the
+// section for each of the 33 z samples — too much to repeat several times per frame during a drag.
+let gapMemo: { key: string; curve: readonly CtrlPt[]; gap: number } | null = null;
+
+function bulbGapOf(p: Params, curve: readonly CtrlPt[]): number {
+  const bulb = BULBS[p.bulbKind];
+  const wall = effectiveWall(p);
+  const key = [
+    p.bulbKind,
+    p.bulbZ,
+    p.height,
+    p.girth,
+    p.sectionKind,
+    p.sides,
+    p.sectionDepth,
+    p.fluteCount,
+    p.fluteDepth,
+    p.waveCount,
+    p.waveDepth,
+    wall,
+  ].join("|");
+  if (gapMemo && gapMemo.key === key && gapMemo.curve === curve) return gapMemo.gap;
+
+  const bulbCentreZ = p.bulbZ * p.height;
+  const z0 = bulbCentreZ - bulb.len / 2;
+  const z1 = bulbCentreZ + bulb.len / 2;
+  let gap = Number.POSITIVE_INFINITY;
+  for (let k = 0; k <= 32; k++) {
+    const z = z0 + ((z1 - z0) * k) / 32;
+    if (z < 0 || z > p.height) continue; // outside the shade: not a clearance concern
+    gap = Math.min(gap, minSurfaceRadiusAt(p, curve, z / p.height) - wall - bulb.dia / 2);
+  }
+  if (!Number.isFinite(gap)) {
+    // Bulb entirely outside the shade's span: fall back to the narrowest point anywhere.
+    const secMin = sectionMin(p.sectionKind, p.sides, p.sectionDepth);
+    gap = minRadius(curve) * p.girth * secMin - wall - bulb.dia / 2;
+  }
+  gapMemo = { key, curve, gap };
+  return gap;
+}
+
 export type Dims = {
   height: number;
   wall: number;
@@ -311,23 +358,9 @@ export type Dims = {
 export function dims(p: Params, curve: readonly CtrlPt[]): Dims {
   const maxR = maxRadius(curve) * p.girth;
   const minR = minRadius(curve) * p.girth;
-  const secMin = sectionMin(p.sectionKind, p.sides, p.sectionDepth);
   const bulb = BULBS[p.bulbKind];
   const bulbCentreZ = p.bulbZ * p.height;
-
-  // Clearance is checked against the narrowest wall the glass could touch: sample the silhouette
-  // over the bulb's vertical span rather than trusting the overall minimum.
-  let bulbGap = Number.POSITIVE_INFINITY;
-  const z0 = bulbCentreZ - bulb.len / 2;
-  const z1 = bulbCentreZ + bulb.len / 2;
-  for (let k = 0; k <= 32; k++) {
-    const z = z0 + ((z1 - z0) * k) / 32;
-    if (z < 0 || z > p.height) continue; // outside the shade: not a clearance concern
-    const wallR = sampleRadius(curve, z / p.height) * p.girth * secMin;
-    bulbGap = Math.min(bulbGap, wallR - bulb.dia / 2);
-  }
-  if (!Number.isFinite(bulbGap)) bulbGap = minR * secMin - bulb.dia / 2;
-
+  const bulbGap = bulbGapOf(p, curve);
   const holeCount = countHoles(p, curve);
 
   return {
@@ -348,16 +381,15 @@ export function dims(p: Params, curve: readonly CtrlPt[]): Dims {
   };
 }
 
+// One warning shape for every lint source — params, fitter and overhang all emit these.
+export type Warning = { text: string; bad: boolean };
+
 // Printability + electrical-safety lint. Deterministic and derived only from params + curve, so the
 // same warnings appear in the browser and in a Node test.
 // `d` is optional so a caller that already has the dimensions (the readout does) doesn't pay for a
 // second full derivation just to lint them.
-export function warnings(
-  p: Params,
-  curve: readonly CtrlPt[],
-  d: Dims = dims(p, curve),
-): { text: string; bad: boolean }[] {
-  const out: { text: string; bad: boolean }[] = [];
+export function warnings(p: Params, curve: readonly CtrlPt[], d: Dims = dims(p, curve)): Warning[] {
+  const out: Warning[] = [];
   const secMin = sectionMin(p.sectionKind, p.sides, p.sectionDepth);
 
   if (d.bulbGap < d.requiredGap) {
@@ -388,8 +420,7 @@ export function warnings(
     // union just fuses them), so both stay advisory — but the readout's hole count goes wrong and a
     // breached rim is usually not what was meant.
     const rad = (p.perfRot * Math.PI) / 180;
-    const holeH =
-      p.perfDia * (p.perfAspect * Math.abs(Math.cos(rad)) + Math.abs(Math.sin(rad)));
+    const holeH = p.perfDia * (p.perfAspect * Math.abs(Math.cos(rad)) + Math.abs(Math.sin(rad)));
     if (p.perfRows > 1) {
       const mv = p.height > 0 ? Math.min(0.45, p.perfMargin / p.height) : 0;
       const rowPitch = ((1 - 2 * mv) * p.height) / (p.perfRows - 1);

@@ -23,14 +23,19 @@ envelope is a code change, not a click.
 ```
 curve.ts        silhouette as control points + Catmull-Rom sampler + families (pure)
 section.ts      cross-section radial functions, normalised to max radius 1 (pure)
+surface.ts      S(u,v): the axes combined — plus the modulated MINIMUM radius that press fits
+                and clearance lint must use (silhouette alone ignores flutes/waves) (pure)
 perforation.ts  patterns -> placements in (u,v) parameter space; hole-shape ids (pure, deterministic)
 perf-texture.ts placements -> drag-preview alpha map (pure polygon math + a CanvasTexture)
 params.ts       schema + dims() + printability/electrical lint
-shade.ts        S(u,v) shell -> indexed mesh -> Manifold via fromMesh() -> batched perforation cut
+lint.ts         composes params + fitter + overhang warnings into the one list the UI shows
+shade.ts        surface -> indexed mesh -> Manifold via fromMesh() -> batched perforation cut
 fitter.ts       fitter in Manifold (preview + STL) + fitterSpec() shared with the STEP builder
 fitter-step.ts  the SAME spec in replicad/OCCT -> true analytic STEP (lazily imported)
-lit.ts          CAD vs lamp lighting modes
+threemf.ts      minimal 3MF writer: mm-unit model XML in a hand-rolled stored zip (pure)
+lit.ts          CAD vs lamp vs overhang view modes + the section-cut clipping plane
 curve-editor.ts draggable silhouette canvas
+build-worker.ts the whole geometry pipeline off-thread; spawned twice (interactive + export)
 main.ts         wiring (browser only: the ?url wasm import lives here)
 ```
 
@@ -96,6 +101,15 @@ Dragging a control must not wait on a boolean that takes 130 ms at default setti
    export, which halves the boolean. A 6 mm hole is ~20 px on screen, where the difference is
    invisible; the ratios in `cutterSegments()` reproduce the old 12/10/16 exactly at `cut = 16`, so
    **exported geometry is unchanged**.
+4. **Drafts skip the fitter entirely.** It cannot change enough mid-drag to matter for the ~180 ms
+   until the settled preview lands, and building it would double the cost of the one build that has
+   to fit inside a frame. The readout's rebuild time is the whole worker round trip (shade + fitter),
+   not just the shade's phase split.
+
+Exports run on a **second, dedicated worker** (same `build-worker.ts` entry, spawned twice): a
+seconds-long dense export neither freezes the tab nor queues against live drag rebuilds. The worker
+builds at `EXPORT` quality, stamps provenance (STL header / 3MF metadata) and transfers the bytes;
+the main thread only turns them into a download.
 
 Derived values are kept off the hot path too: the geometry builders take `effectiveWall(p)` rather
 than calling the expensive `dims()` for one field, `dims()` memoises its hole count (it materialises
@@ -127,10 +141,7 @@ so it would photograph the previous mesh.
 
 ## Not done yet
 
-- 3MF export (button disabled; STL covers the same slicers).
-- STL/STEP export still builds on the main thread, so a dense export blocks the tab for seconds. It
-  is a deliberate click rather than an interactive frame, and the worker client is fire-and-forget
-  (latest-wins would let an export be superseded), so it needs its own request path.
+- STEP export still builds on the main thread (rare, deliberate click; OCCT loads lazily anyway).
 - Variant gallery (render N thumbnails across one axis, click to adopt).
 - Clip-on fitter arms are modelled as straight cantilevers; a real sprung clip needs flex that
   geometry alone can't express. Print in PETG and expect to tune the grip radius.

@@ -1,5 +1,5 @@
-// The shade: a parametric shell S(u,v) — silhouette × cross-section × twist × flutes × waves —
-// generated as a triangle mesh, adopted by Manifold via fromMesh(), then perforated.
+// The shade: the parametric shell from surface.ts — silhouette × cross-section × twist × flutes ×
+// waves — generated as a triangle mesh, adopted by Manifold via fromMesh(), then perforated.
 //
 // Why a generated mesh and not extrude/revolve: revolve is circular-only and a twisted extrude has a
 // constant cross-section, so neither can express the product of these axes. Validated by spike: a
@@ -10,13 +10,12 @@
 
 import { BufferAttribute, BufferGeometry } from "three";
 import { type Mat, scope, type Solid } from "parametric-kit/csg";
-import { type CtrlPt, sampleRadius } from "./curve.ts";
-import { makeSection, suggestedUSegments } from "./section.ts";
+import type { CtrlPt } from "./curve.ts";
+import { suggestedUSegments } from "./section.ts";
 import { type PerfShape, perfPlacements, type Placement } from "./perforation.ts";
 import { effectiveWall, type Params, perfInputOf } from "./params.ts";
+import { makeSurface } from "./surface.ts";
 import { perfProfile } from "./shapes.ts";
-
-const TAU = Math.PI * 2;
 
 // `cut` is the segment count of a round perforation cutter, and it is the single most expensive
 // number in the app: the boolean's cost tracks the cutters' triangle count almost linearly (measured
@@ -52,103 +51,6 @@ function cutterSegments(shape: PerfShape, dia: number, cut: number): number {
   if (shape === "slot") return Math.max(5, Math.round(cut * 0.75));
   if (dia < 4) return Math.max(4, Math.round(cut * 0.625));
   return cut;
-}
-
-type Vec3 = [number, number, number];
-
-// The one place the axes combine. Everything downstream — mesh, normals, cutter placement, the
-// overhang lint — reads the surface through this, so a new axis is added here once.
-export function makeSurface(p: Params, curve: readonly CtrlPt[]) {
-  const section = makeSection(p.sectionKind, p.sides, p.sectionDepth);
-  const twist = (p.twistDeg * Math.PI) / 180;
-  const flutes = Math.round(p.fluteCount);
-  const waves = Math.round(p.waveCount);
-
-  const radius = (u: number, v: number): number => {
-    const theta = u * TAU;
-    // Flutes and the section both rotate with the twist, so the whole profile shears together
-    // instead of the flutes sliding across it.
-    const local = theta - twist * v;
-    let r = sampleRadius(curve, v) * p.girth * section(local);
-    if (flutes > 0) r -= p.fluteDepth * 0.5 * (1 - Math.cos(flutes * local));
-    if (waves > 0) r += p.waveDepth * 0.5 * Math.sin(waves * TAU * v);
-    return Math.max(1.5, r);
-  };
-
-  const at = (u: number, v: number): Vec3 => {
-    const theta = u * TAU;
-    const r = radius(u, v);
-    return [r * Math.cos(theta), r * Math.sin(theta), p.height * v];
-  };
-
-  // Central differences on the parametric surface. Cheaper and steadier than averaging face normals,
-  // and it gives a usable tangent frame for orienting slot cutters.
-  const frame = (u: number, v: number) => {
-    const e = 1e-4;
-    const a = at((u + e + 1) % 1, v);
-    const b = at((u - e + 1) % 1, v);
-    const c = at(u, Math.min(1, v + e));
-    const d = at(u, Math.max(0, v - e));
-    const du: Vec3 = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    const dv: Vec3 = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
-    const n = norm(cross(du, dv));
-    return { pos: at(u, v), n, tu: norm(du), tv: norm(cross(n, norm(du))) };
-  };
-
-  return { radius, at, frame };
-}
-
-// Worst overhang-from-vertical anywhere on the modulated surface: asin(|n_z|) of the frame()
-// normals over a coarse grid. |n_z| rather than a signed test because a thin shell fails leaning
-// either way — an inward overhang sags exactly like an outward one. Rim rows are excluded: v = 0
-// and v = 1 sit on the annuli, whose normals are ±Z by construction and would always read 90°.
-//
-// Single-slot memo in the countHoles() pattern: the lint composition in main.ts runs per frame
-// during a drag, and the curve is compared by reference — every edit swaps the whole array, so
-// that is exact rather than approximate.
-let overhangMemo: { key: string; curve: readonly CtrlPt[]; deg: number } | null = null;
-
-export function maxOverhangDeg(
-  p: Params,
-  curve: readonly CtrlPt[],
-  samples = { u: 48, v: 32 },
-): number {
-  const key = [
-    p.height,
-    p.girth,
-    p.sectionKind,
-    p.sides,
-    p.sectionDepth,
-    p.twistDeg,
-    p.fluteCount,
-    p.fluteDepth,
-    p.waveCount,
-    p.waveDepth,
-    samples.u,
-    samples.v,
-  ].join("|");
-  if (overhangMemo && overhangMemo.key === key && overhangMemo.curve === curve) {
-    return overhangMemo.deg;
-  }
-  const surface = makeSurface(p, curve);
-  let worst = 0;
-  for (let j = 1; j < samples.v; j++) {
-    for (let i = 0; i < samples.u; i++) {
-      worst = Math.max(worst, Math.abs(surface.frame(i / samples.u, j / samples.v).n[2]));
-    }
-  }
-  const deg = (Math.asin(Math.min(1, worst)) * 180) / Math.PI;
-  overhangMemo = { key, curve, deg };
-  return deg;
-}
-
-function cross(a: Vec3, b: Vec3): Vec3 {
-  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-}
-
-function norm(v: Vec3): Vec3 {
-  const L = Math.hypot(v[0], v[1], v[2]) || 1;
-  return [v[0] / L, v[1] / L, v[2] / L];
 }
 
 // The shell as an indexed watertight mesh: outer skin, inner skin offset along the surface normal,

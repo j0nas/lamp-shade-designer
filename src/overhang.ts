@@ -8,11 +8,9 @@
 
 import { BufferAttribute, type BufferGeometry, Color } from "three";
 import { type CtrlPt, sampleRadius } from "./curve.ts";
-import { maxOverhangDeg } from "./shade.ts";
-import type { Params } from "./params.ts";
+import { maxOverhangDeg, waveOffset } from "./surface.ts";
+import type { Params, Warning } from "./params.ts";
 import { SHADE_COLOR } from "./lit.ts";
-
-const TAU = Math.PI * 2;
 
 export const OVERHANG_WARN_DEG = 50; // printable, but wants cooling and a good profile
 export const OVERHANG_BAD_DEG = 65; // sags or needs supports
@@ -39,10 +37,18 @@ function mix(a: Color, b: Color, t: number): [number, number, number] {
 export function ramp(deg: number): [number, number, number] {
   if (deg <= RAMP_START_DEG) return [STOP_NEUTRAL.r, STOP_NEUTRAL.g, STOP_NEUTRAL.b];
   if (deg <= OVERHANG_WARN_DEG) {
-    return mix(STOP_NEUTRAL, STOP_WARN, (deg - RAMP_START_DEG) / (OVERHANG_WARN_DEG - RAMP_START_DEG));
+    return mix(
+      STOP_NEUTRAL,
+      STOP_WARN,
+      (deg - RAMP_START_DEG) / (OVERHANG_WARN_DEG - RAMP_START_DEG),
+    );
   }
   if (deg <= OVERHANG_BAD_DEG) {
-    return mix(STOP_WARN, STOP_BAD, (deg - OVERHANG_WARN_DEG) / (OVERHANG_BAD_DEG - OVERHANG_WARN_DEG));
+    return mix(
+      STOP_WARN,
+      STOP_BAD,
+      (deg - OVERHANG_WARN_DEG) / (OVERHANG_BAD_DEG - OVERHANG_WARN_DEG),
+    );
   }
   return [STOP_BAD.r, STOP_BAD.g, STOP_BAD.b];
 }
@@ -96,19 +102,12 @@ export type SilhouetteOpts = {
 // Silhouette-only severity at a height fraction v, from central differences of the radius the
 // surface actually uses: the sampled curve scaled by girth, plus the axisymmetric wave term (waves
 // modulate r by v alone, so they belong to the silhouette; flutes and sections modulate by u and
-// average out of a band view). For a surface of revolution atan(|dr/dz|) ≡ asin(|n_z|), so this
+// average out of a band view). The wave term is surface.ts's own waveOffset, so the band view and
+// the 3D surface cannot drift. For a surface of revolution atan(|dr/dz|) ≡ asin(|n_z|), so this
 // agrees with maxOverhangDeg's normal sampling on a circle section — a test pins that identity.
-export function silhouetteDeg(
-  curve: readonly CtrlPt[],
-  opts: SilhouetteOpts,
-  v: number,
-): number {
-  const waves = Math.round(opts.waveCount);
-  const r = (vv: number): number => {
-    let out = sampleRadius(curve, vv) * opts.girth;
-    if (waves > 0) out += opts.waveDepth * 0.5 * Math.sin(waves * TAU * vv);
-    return out;
-  };
+export function silhouetteDeg(curve: readonly CtrlPt[], opts: SilhouetteOpts, v: number): number {
+  const r = (vv: number): number =>
+    sampleRadius(curve, vv) * opts.girth + waveOffset(opts.waveCount, opts.waveDepth, vv);
   const e = 1e-3;
   const lo = Math.max(0, v - e);
   const hi = Math.min(1, v + e);
@@ -136,13 +135,9 @@ export function overhangBands(curve: readonly CtrlPt[], opts: SilhouetteOpts): O
 }
 
 // --- lint ----------------------------------------------------------------------------------------
-// Composed into the readout by main.ts, NOT merged into params.warnings(): shade.ts already
-// imports params.ts, so routing this through params would close an import cycle.
+// Composed with the other lint sources by lint.ts.
 
-export function overhangWarnings(
-  p: Params,
-  curve: readonly CtrlPt[],
-): { text: string; bad: boolean }[] {
+export function overhangWarnings(p: Params, curve: readonly CtrlPt[]): Warning[] {
   const deg = maxOverhangDeg(p, curve);
   if (deg >= OVERHANG_BAD_DEG) {
     return [

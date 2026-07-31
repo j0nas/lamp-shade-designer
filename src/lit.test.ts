@@ -1,9 +1,9 @@
 // Lighting mode switching. No renderer here — createLighting only mutates the scene graph and
 // materials, so a bare Scene stands in for the viewer's.
 import { describe, expect, test } from "vite-plus/test";
-import { AmbientLight, Color, DirectionalLight, Scene } from "three";
+import { AmbientLight, BufferGeometry, Color, DirectionalLight, Scene } from "three";
 import { defaults } from "parametric-kit/params";
-import { createLighting, SHADE_COLOR } from "./lit.ts";
+import { createLighting, setSectionCut, SHADE_COLOR, shadeMesh } from "./lit.ts";
 import { type Params, schema } from "./params.ts";
 
 const STUDIO = 0xeef1f4; // the kit viewer's background
@@ -112,5 +112,29 @@ describe("view modes", () => {
     lighting.setMode("cad");
     expect(lighting.shadeMaterial.vertexColors).toBe(false);
     expect(lighting.shadeMaterial.color.getHex()).toBe(SHADE_COLOR);
+  });
+});
+
+describe("section cut", () => {
+  test("clips every render path of the shade — surface, depth and distance — change-guarded", () => {
+    const lighting = createLighting(studioScene());
+    const mesh = shadeMesh(new BufferGeometry(), lighting.shadeMaterial);
+
+    setSectionCut([mesh], true);
+    expect(lighting.shadeMaterial.clippingPlanes).toHaveLength(1);
+    // The shadow passes render with their own materials; an unclipped depth pass would cast the
+    // WHOLE shade's shadow while the surface shows half — lamp mode's one job is truthful light.
+    expect(mesh.customDepthMaterial?.clippingPlanes).toHaveLength(1);
+    expect(mesh.customDistanceMaterial?.clippingPlanes).toHaveLength(1);
+    expect(lighting.shadeMaterial.clipShadows).toBe(true);
+
+    // Re-applying the same state must not recompile (version only moves via needsUpdate).
+    const version = lighting.shadeMaterial.version;
+    setSectionCut([mesh], true);
+    expect(lighting.shadeMaterial.version).toBe(version);
+
+    setSectionCut([mesh], false);
+    expect(lighting.shadeMaterial.clippingPlanes).toBeNull();
+    expect(lighting.shadeMaterial.version).toBe(version + 1);
   });
 });

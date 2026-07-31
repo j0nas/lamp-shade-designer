@@ -178,7 +178,8 @@ describe("stampStlHeader", () => {
   const blank = (bytes = 100): DataView<ArrayBuffer> => new DataView(new ArrayBuffer(bytes));
   const headerText = (view: DataView): string => {
     let s = "";
-    for (let i = 0; i < 80 && view.getUint8(i) !== 0; i++) s += String.fromCharCode(view.getUint8(i));
+    for (let i = 0; i < 80 && view.getUint8(i) !== 0; i++)
+      s += String.fromCharCode(view.getUint8(i));
     return s;
   };
 

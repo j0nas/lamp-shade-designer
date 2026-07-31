@@ -8,7 +8,8 @@ import { defaults } from "parametric-kit/params";
 import { creased } from "parametric-kit/viewer";
 import { familyCurve } from "./curve.ts";
 import { type Params, schema } from "./params.ts";
-import { buildShade, maxOverhangDeg } from "./shade.ts";
+import { buildShade } from "./shade.ts";
+import { maxOverhangDeg } from "./surface.ts";
 import { SHADE_COLOR } from "./lit.ts";
 import {
   applyOverhangColors,

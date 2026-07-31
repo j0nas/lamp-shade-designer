@@ -12,9 +12,9 @@
 
 import type { BufferGeometry } from "three";
 import { type Mat, scope, type Solid } from "parametric-kit/csg";
-import { type CtrlPt, sampleRadius } from "./curve.ts";
-import { sectionMin } from "./section.ts";
-import { effectiveWall, type Params } from "./params.ts";
+import type { CtrlPt } from "./curve.ts";
+import { effectiveWall, type Params, type Warning } from "./params.ts";
+import { minSurfaceRadiusAt } from "./surface.ts";
 import { annulus } from "./shapes.ts";
 
 export type FitterKind = Params["fitterKind"];
@@ -36,11 +36,12 @@ const CLEARANCE = 0.25; // press fit into the shade's inner surface
 const MIN_BAND = 4; // never leave a band thinner than this between bore and rim
 
 export function fitterSpec(p: Params, curve: readonly CtrlPt[]): FitterSpec {
-  const secMin = sectionMin(p.sectionKind, p.sides, p.sectionDepth);
   const wall = effectiveWall(p);
-  // The ring sits inside the shade's opening. secMin (not the max) so a lobed or star section still
-  // clears the ring at its narrowest point.
-  const shadeInner = sampleRadius(curve, p.fitterZ) * p.girth * secMin - wall;
+  // The ring sits inside the shade's opening, so it must clear the MODULATED minimum radius at the
+  // mount height — section, flutes and waves all included. The silhouette alone overstates that by
+  // up to fluteDepth + waveDepth/2, which against a 0.25 mm press fit is not a rounding error but a
+  // part that will not go in.
+  const shadeInner = minSurfaceRadiusAt(p, curve, p.fitterZ) - wall;
   const outerR = Math.max(10, shadeInner - CLEARANCE);
   const boreR = Math.max(2, Math.min(p.fitterBore / 2, outerR - MIN_BAND));
   const span = outerR - boreR;
@@ -136,16 +137,11 @@ export function buildFitter(p: Params, curve: readonly CtrlPt[]): BufferGeometry
   return s.finish(body);
 }
 
-export type FitterWarning = { text: string; bad: boolean };
-
-// The fitter's own lint. Kept here rather than in params.ts so params.ts does not have to import this
-// module (which would make the two files circular).
-export function fitterWarnings(
-  p: Params,
-  curve: readonly CtrlPt[],
-): { text: string; bad: boolean }[] {
+// The fitter's own lint. Kept here rather than in params.ts because this module imports params.ts
+// at runtime (effectiveWall) — lint.ts composes the full list.
+export function fitterWarnings(p: Params, curve: readonly CtrlPt[]): Warning[] {
   const f = fitterSpec(p, curve);
-  const out: { text: string; bad: boolean }[] = [];
+  const out: Warning[] = [];
   if (f.boreR * 2 < p.fitterBore - 0.01) {
     out.push({
       text: `The shade is only ${(f.outerR * 2).toFixed(0)} mm across at the mount height, so the ${p.fitterBore} mm bore was reduced to ${(f.boreR * 2).toFixed(0)} mm. Lower the mount, widen the shade, or use a smaller socket.`,

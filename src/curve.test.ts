@@ -4,6 +4,7 @@ import {
   DEFAULT_FAMILY,
   FAMILY_NAMES,
   familyCurve,
+  familyOf,
   MAX_CURVE_PTS,
   MAX_R,
   MIN_R,
@@ -15,6 +16,19 @@ import {
   setPoint,
   smooth,
 } from "./curve.ts";
+
+describe("familyOf", () => {
+  test("recognises every family's own curve and nothing edited", () => {
+    for (const name of FAMILY_NAMES) expect(familyOf(familyCurve(name))).toBe(name);
+    const edited = setPoint(familyCurve("bell"), 1, 0.2, 90);
+    expect(familyOf(edited)).toBeNull();
+  });
+
+  test("judges the points, not the history: a mirrored drum is still a drum", () => {
+    expect(familyOf(mirrorV(familyCurve("drum")))).toBe("drum");
+    expect(familyOf(mirrorV(familyCurve("cone")))).toBeNull(); // a funnel is no named family
+  });
+});
 
 describe("sampleRadius", () => {
   test("passes exactly through its control points", () => {

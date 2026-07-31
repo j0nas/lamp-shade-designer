@@ -29,9 +29,7 @@ type Golden = {
 };
 
 const UPDATE = !!process.env.UPDATE_GOLDENS;
-const golden: Record<string, Golden> = UPDATE
-  ? {}
-  : JSON.parse(readFileSync(GOLDEN_PATH, "utf8"));
+const golden: Record<string, Golden> = UPDATE ? {} : JSON.parse(readFileSync(GOLDEN_PATH, "utf8"));
 const regenerated: Record<string, Golden> = {};
 
 beforeAll(async () => {

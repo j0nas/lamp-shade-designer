@@ -80,6 +80,19 @@ export function familyCurve(name: string): CtrlPt[] {
   return (FAMILIES[name] ?? FAMILIES[DEFAULT_FAMILY]).map((p) => ({ ...p }));
 }
 
+// Which named family a curve IS — every point matching within a hair — or null for a custom curve.
+// Drives the family <select>: it must read as state only when it is true, and an edited curve is
+// not a family whatever the select last said.
+export function familyOf(pts: readonly CtrlPt[]): string | null {
+  const eq = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+  for (const [name, fam] of Object.entries(FAMILIES)) {
+    if (fam.length === pts.length && fam.every((f, i) => eq(f.v, pts[i].v) && eq(f.r, pts[i].r))) {
+      return name;
+    }
+  }
+  return null;
+}
+
 // Uniform Catmull-Rom through the control points. Spacing is NOT arc-length reparameterised — the
 // tangents come from neighbouring radii directly — which is visually fine for a silhouette and is
 // the form validated by the geometry spike. Overshoot is real (the spline can dip below a control

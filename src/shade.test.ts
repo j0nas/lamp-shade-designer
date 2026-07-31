@@ -322,7 +322,13 @@ describe("hole shapes", () => {
 
 describe("stored-params migration", () => {
   test("a saved slots design becomes grid + slot shape with the old auto stretch", () => {
-    const out = migrateStored({ perfPattern: "slots", perfRows: 8, perfDia: 4, height: 200, perfMargin: 12 });
+    const out = migrateStored({
+      perfPattern: "slots",
+      perfRows: 8,
+      perfDia: 4,
+      height: 200,
+      perfMargin: 12,
+    });
     expect(out).toMatchObject({ perfPattern: "grid", perfShape: "slot", perfEven: false });
     // Old formula: max(2, vSpan·height / rows / dia / 1.6) with mv = 12/200.
     expect(out?.perfAspect).toBeCloseTo(Math.max(2, (0.88 * 200) / 8 / 4 / 1.6), 1);
@@ -381,7 +387,10 @@ describe("lint", () => {
 
   test("flags holes taller than the rim margin", () => {
     expect(
-      has(base({ perfShape: "slot", perfAspect: 8, perfDia: 10, perfMargin: 5 }), /taller than the rim/i),
+      has(
+        base({ perfShape: "slot", perfAspect: 8, perfDia: 10, perfMargin: 5 }),
+        /taller than the rim/i,
+      ),
     ).toBe(true);
     expect(has(base(), /taller than the rim/i)).toBe(false);
   });
