@@ -85,13 +85,16 @@ const design: Design = working.design;
 let active = Math.min(working.active, design.layers.length - 1);
 
 // A share link replaces the working copy — deliberately: the link IS the design being opened. The
-// hash is then stripped so a reload keeps subsequent edits instead of re-applying the link.
+// hash is then stripped so a reload keeps subsequent edits instead of re-applying the link. The
+// link's design NAME is kept too (the name input doesn't exist yet — filled in after it does).
+let sharedName: string | null = null;
 {
   const shared = decodeDesignHash(location.hash);
   if (shared) {
     design.globals = { ...shared.globals };
     design.layers = shared.layers.map((l) => structuredClone(l));
     active = 0;
+    if (shared.name !== "untitled") sharedName = shared.name;
     saveWorking({ design, active });
     history.replaceState(null, "", location.pathname + location.search);
   }
@@ -804,6 +807,7 @@ linkBtn.addEventListener("click", () => {
 });
 
 refreshDesigns();
+if (sharedName) designName.value = sharedName;
 
 // --- view controls (app chrome: deliberately not schema params) -----------------------------------
 const viewModeSel = $<HTMLSelectElement>("view-mode");
