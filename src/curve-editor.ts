@@ -31,9 +31,10 @@ export type EditorContext = {
   editable: boolean; // false while the active layer is nested (its curve is derived)
   nestedHint: string | null;
   ghosts: EditorGhost[];
-  // The glass and the clearance it needs — drawn so the silhouette is designed AROUND the bulb
-  // rather than checked against it afterwards.
-  bulb: { rMm: number; lenMm: number; zMm: number; clearMm: number } | null;
+  // The bulb and the clearance it needs — drawn so the silhouette is designed AROUND the bulb
+  // rather than checked against it afterwards. Both are REAL section cuts (see bulbs.ts): [r,
+  // world z] polylines from base to tip, closed onto the axis, ready to mirror.
+  bulb: { pts: [number, number][]; keepPts: [number, number][] } | null;
   fitterZMm: number;
   // Overhang lint bands (active layer, v-space). Always drawn — this is lint, like the warnings
   // list, not something gated on the 3D view mode.
@@ -93,7 +94,7 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
     let peak = MIN_R;
     for (const p of opts.get()) peak = Math.max(peak, p.r * ctx.girth);
     for (const g of ctx.ghosts) for (const [r] of g.pts) peak = Math.max(peak, r);
-    if (ctx.bulb) peak = Math.max(peak, ctx.bulb.rMm + ctx.bulb.clearMm);
+    if (ctx.bulb) for (const [r] of ctx.bulb.keepPts) peak = Math.max(peak, r);
     return Math.max(40, Math.ceil((peak * 1.12) / 20) * 20);
   };
 
@@ -216,11 +217,12 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
       });
     }
     if (ctx.bulb) {
-      entries.push({ swatch: "line-bulb", text: "bulb glass" });
+      entries.push({ swatch: "line-bulb", text: "bulb (real section)" });
       entries.push({ swatch: "line-clear", text: "bulb keep-out (glass + air gap)" });
     }
     entries.push({ swatch: "line-mount", text: "mount plane (fitter seat)" });
-    for (const g of ctx.ghosts) entries.push({ swatch: "line-layer", color: g.color, text: g.label });
+    for (const g of ctx.ghosts)
+      entries.push({ swatch: "line-layer", color: g.color, text: g.label });
 
     const key = JSON.stringify(entries);
     if (key === legendKey) return;
@@ -311,10 +313,7 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
     const right: [number, number][] = [];
     for (let k = 0; k <= N; k++) {
       const v = k / N;
-      right.push([
-        xOf(g, sampleRadius(pts, v) * ctx.girth),
-        yOf(g, ctx.liftMm + v * ctx.heightMm),
-      ]);
+      right.push([xOf(g, sampleRadius(pts, v) * ctx.girth), yOf(g, ctx.liftMm + v * ctx.heightMm)]);
     }
 
     c2d.beginPath();
@@ -354,30 +353,31 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
       c2d.stroke();
     }
 
-    // --- bulb envelope + required clearance ------------------------------------------------
+    // --- bulb section + required clearance -------------------------------------------------
     if (ctx.bulb) {
-      const capsule = (r: number): void => {
-        const b = ctx.bulb!;
-        const cap = Math.min(r, b.lenMm / 2); // end-cap radius, clamped for stubby envelopes
-        const yTop = yOf(g, b.zMm + b.lenMm / 2 - cap);
-        const yBot = yOf(g, b.zMm - b.lenMm / 2 + cap);
-        const rx = xOf(g, r) - g.cx;
-        const ry = cap * g.s; // uniform scale: end caps are true circles
+      // The section runs base → tip on the +r side and is closed onto the axis at both ends, so
+      // tracing it out and back mirrored draws the whole lamp in one path.
+      const section = (pts: [number, number][]): void => {
         c2d.beginPath();
-        c2d.ellipse(g.cx, yTop, rx, ry, 0, Math.PI, 0); // top arc, left → right
-        c2d.lineTo(g.cx + rx, yBot);
-        c2d.ellipse(g.cx, yBot, rx, ry, 0, 0, Math.PI); // bottom arc, right → left
+        pts.forEach(([r, z], k) => {
+          if (k === 0) c2d.moveTo(xOf(g, r), yOf(g, z));
+          else c2d.lineTo(xOf(g, r), yOf(g, z));
+        });
+        for (let k = pts.length - 1; k >= 0; k--) {
+          const [r, z] = pts[k];
+          c2d.lineTo(g.cx - (xOf(g, r) - g.cx), yOf(g, z));
+        }
         c2d.closePath();
       };
       c2d.strokeStyle = "#ffd9a066";
       c2d.setLineDash([4, 3]);
       c2d.lineWidth = 1;
-      capsule(ctx.bulb.rMm);
+      section(ctx.bulb.pts);
       c2d.stroke();
-      // The keep-out: glass plus the wattage-driven air gap. Inside this line is a warning.
+      // The keep-out: the bulb plus the wattage-driven air gap. Inside this line is a warning.
       c2d.strokeStyle = "rgba(224,163,58,0.4)";
       c2d.setLineDash([2, 4]);
-      capsule(ctx.bulb.rMm + ctx.bulb.clearMm);
+      section(ctx.bulb.keepPts);
       c2d.stroke();
       c2d.setLineDash([]);
     }
@@ -496,7 +496,9 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
       if (spot) {
         opts.beginEdit?.();
         opts.set(addPointAt(opts.get(), spot.v));
-        i = opts.get().findIndex((p) => Math.abs(p.v - Math.min(0.995, Math.max(0.005, spot.v))) < 1e-9);
+        i = opts
+          .get()
+          .findIndex((p) => Math.abs(p.v - Math.min(0.995, Math.max(0.005, spot.v))) < 1e-9);
         opts.onChange();
       }
     } else {
@@ -528,8 +530,7 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
       if (!ctx.editable) return;
       const i = nearest(ctx, g, x, y);
       const spot = i < 0 ? curveSpot(ctx, g, x, y) : null;
-      const changed =
-        i !== hover || (spot === null) !== (ghost === null) || spot?.v !== ghost?.v;
+      const changed = i !== hover || (spot === null) !== (ghost === null) || spot?.v !== ghost?.v;
       hover = i;
       ghost = spot;
       canvas.style.cursor = i >= 0 ? "grab" : spot ? "copy" : "crosshair";

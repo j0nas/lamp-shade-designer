@@ -12,8 +12,9 @@
 
 import {
   AmbientLight,
-  type BufferGeometry,
+  BufferGeometry,
   Color,
+  LatheGeometry,
   type Light,
   type Material,
   Mesh,
@@ -27,11 +28,12 @@ import {
   PointLight,
   RGBADepthPacking,
   type Scene,
-  SphereGeometry,
   type Texture,
+  Vector2,
   Vector3,
 } from "three";
-import { BULBS, type GlobalParams } from "./params.ts";
+import { BULBS, bulbCapUp, bulbGlassMid, bulbLatheProfiles } from "./bulbs.ts";
+import { type GlobalParams } from "./params.ts";
 
 export type ViewMode = "cad" | "lamp" | "overhang";
 
@@ -97,12 +99,35 @@ export function createLighting(scene: Scene): Lighting {
   bulbLight.visible = false;
   scene.add(bulbLight);
 
-  const bulbMesh = new Mesh(
-    new SphereGeometry(1, 24, 16),
-    new MeshStandardMaterial({ emissive: 0xffe6b8, emissiveIntensity: 2.5, color: 0x000000 }),
-  );
-  bulbMesh.visible = false;
-  scene.add(bulbMesh);
+  // The bulb itself: the REAL product shape (see bulbs.ts), lathed from the same section profile
+  // the silhouette editor draws. Two meshes because the lamp is two materials — glowing glass and
+  // a metal base — split where the profile says the cap ends. Geometry is rebuilt only when the
+  // bulb kind or its orientation changes; position tracks every param change for free.
+  const bulbGlassMat = new MeshStandardMaterial({
+    emissive: 0xffe6b8,
+    emissiveIntensity: 2.5,
+    color: 0x000000,
+  });
+  const bulbBaseMat = new MeshStandardMaterial({
+    color: 0x9aa0a6,
+    roughness: 0.4,
+    metalness: 0.75,
+  });
+  const bulbGlass = new Mesh(new BufferGeometry(), bulbGlassMat);
+  const bulbBase = new Mesh(new BufferGeometry(), bulbBaseMat);
+  bulbGlass.visible = bulbBase.visible = false;
+  scene.add(bulbGlass, bulbBase);
+  let bulbGeomKey = "";
+
+  // Lathe a [r, z] profile: LatheGeometry spins around +Y, the scene is Z-up, so tip the result.
+  const lathe = (profile: [number, number][]): BufferGeometry => {
+    const geom = new LatheGeometry(
+      profile.map(([r, z]) => new Vector2(r, z)),
+      48,
+    );
+    geom.rotateX(Math.PI / 2);
+    return geom;
+  };
 
   // Floor and back wall to catch the cast pattern. Standard lit surfaces rather than the kit's
   // shadow-catcher, because here we want to see the LIGHT, not just the shadow. Kept mid-grey, not
@@ -166,14 +191,36 @@ export function createLighting(scene: Scene): Lighting {
     // genuinely lit room, otherwise the slider only ever moves between black and slightly-less-black.
     room.intensity = brightness * 1.6;
     bulbLight.visible = lamp;
-    bulbMesh.visible = lamp && showBulb;
+    bulbGlass.visible = bulbBase.visible = lamp && showBulb;
     floor.visible = lamp;
     wall.visible = lamp;
 
     if (lamp && lastG) {
       const g = lastG;
       const bulb = BULBS[g.bulbKind];
-      const z = g.bulbZ * lastH;
+      const centre = g.bulbZ * lastH;
+      // Cap towards the mount: pendant hangs the bulb cap-up, a table-lamp socket holds it cap-down.
+      const capUp = bulbCapUp(g.fitterZ, g.bulbZ);
+      const geomKey = `${g.bulbKind}|${capUp}`;
+      if (geomKey !== bulbGeomKey) {
+        bulbGeomKey = geomKey;
+        const prof = bulbLatheProfiles(g.bulbKind);
+        for (const [mesh, profile] of [
+          [bulbGlass, prof.glass],
+          [bulbBase, prof.base],
+        ] as const) {
+          const old = mesh.geometry;
+          mesh.geometry = lathe(profile);
+          old.dispose();
+          mesh.rotation.x = capUp ? Math.PI : 0; // flip: local z runs base → tip
+        }
+      }
+      const meshZ = capUp ? centre + bulb.len / 2 : centre - bulb.len / 2;
+      bulbGlass.position.set(0, 0, meshZ);
+      bulbBase.position.set(0, 0, meshZ);
+      // The light sits mid-GLASS (where the filament is), not mid-envelope.
+      const mid = bulbGlassMid(g.bulbKind);
+      const lightZ = capUp ? centre + bulb.len / 2 - mid : centre - bulb.len / 2 + mid;
 
       // CRITICAL: the scene is in MILLIMETRES and this light uses physical decay = 2, so illuminance
       // falls as intensity / d² with d in mm. A "realistic" 96 cd therefore lands at 96/400² ≈ 0.0006
@@ -182,10 +229,8 @@ export function createLighting(scene: Scene): Lighting {
       const MM_UNIT_GAIN = 5600;
       bulbLight.intensity = g.watts * MM_UNIT_GAIN;
       bulbLight.color = kelvinish(g.watts);
-      bulbLight.position.set(0, 0, z);
+      bulbLight.position.set(0, 0, lightZ);
       bulbLight.distance = 0; // no cutoff; decay alone shapes the falloff
-      bulbMesh.position.set(0, 0, z);
-      bulbMesh.scale.setScalar(bulb.dia / 2);
 
       const reach = Math.max(lastR * 6, lastH * 3);
       floor.scale.set(reach, reach, 1);
@@ -273,9 +318,11 @@ export function createLighting(scene: Scene): Lighting {
       apply();
     },
     dispose() {
-      for (const o of [room, bulbLight, bulbMesh, floor, wall]) scene.remove(o);
-      bulbMesh.geometry.dispose();
-      (bulbMesh.material as MeshStandardMaterial).dispose();
+      for (const o of [room, bulbLight, bulbGlass, bulbBase, floor, wall]) scene.remove(o);
+      bulbGlass.geometry.dispose();
+      bulbBase.geometry.dispose();
+      bulbGlassMat.dispose();
+      bulbBaseMat.dispose();
       planeGeom.dispose();
       surfaceMat.dispose();
       for (const m of layerMaterials) m.dispose();

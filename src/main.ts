@@ -25,8 +25,8 @@ import {
   smooth,
   mirrorV,
 } from "./curve.ts";
+import { bulbCapUp, bulbKeepOutWorld, bulbSectionWorld } from "./bulbs.ts";
 import {
-  BULBS,
   effectiveWall,
   mergeParams,
   minBulbGap,
@@ -399,7 +399,7 @@ document.addEventListener("keydown", (ev) => {
 function editorContext(): EditorContext {
   const a = asm();
   const l = a.layers[active];
-  const bulb = BULBS[design.globals.bulbKind];
+  const capUp = bulbCapUp(design.globals.fitterZ, design.globals.bulbZ);
   const n = design.layers.length;
   const ghosts = a.layers.flatMap((rl, i) => {
     if (i === active || !design.layers[i].visible) return [];
@@ -422,10 +422,13 @@ function editorContext(): EditorContext {
       : null,
     ghosts,
     bulb: {
-      rMm: bulb.dia / 2,
-      lenMm: bulb.len,
-      zMm: a.bulbCentreZ,
-      clearMm: minBulbGap(design.globals.watts),
+      pts: bulbSectionWorld(design.globals.bulbKind, a.bulbCentreZ, capUp),
+      keepPts: bulbKeepOutWorld(
+        design.globals.bulbKind,
+        a.bulbCentreZ,
+        capUp,
+        minBulbGap(design.globals.watts),
+      ),
     },
     fitterZMm: a.fitterZ,
     bands: overhangBands(l.curve, {
@@ -646,9 +649,7 @@ function afterLayersChanged(): void {
 
 $("layer-add").addEventListener("click", () => {
   if (design.layers.length >= MAX_LAYERS) return;
-  design.layers.push(
-    makeInnerLayer(design.layers[design.layers.length - 1], design.layers.length),
-  );
+  design.layers.push(makeInnerLayer(design.layers[design.layers.length - 1], design.layers.length));
   active = design.layers.length - 1;
   afterLayersChanged();
 });

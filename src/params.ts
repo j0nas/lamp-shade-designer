@@ -4,6 +4,7 @@
 // Units: millimetres, degrees, Z-up. The shade is built in print orientation, bottom rim on z = 0.
 
 import { defineParams, num, pick, toggle, type Infer } from "parametric-kit/params";
+import { BULB_KINDS, BULBS, bulbCapUp, bulbSectionWorld, sectionGap } from "./bulbs.ts";
 import { type CtrlPt, maxRadius, minRadius, sampleRadius } from "./curve.ts";
 import { SECTION_KINDS, SECTION_LABELS, sectionMin, type SectionKind } from "./section.ts";
 import { minSurfaceRadiusAt } from "./surface.ts";
@@ -152,7 +153,7 @@ export const schema = defineParams({
   perfEven: toggle({ def: true, group: "perforation-grid", label: "Even spacing" }),
 
   // --- light ------------------------------------------------------------------------------
-  bulbKind: pick(["a60", "g95", "st64", "gu10", "led-strip"] as const, {
+  bulbKind: pick(BULB_KINDS, {
     def: "a60",
     group: "light",
     label: "Bulb",
@@ -253,15 +254,8 @@ export function mergeParams(globals: GlobalParams, layer: LayerParams): Params {
   return { ...layer, ...globals } as Params;
 }
 
-// --- bulb envelopes: real glass dimensions, so clearance is guaranteed rather than remembered ----
-// Diameter × length in mm, measured from the socket shoulder.
-export const BULBS: Record<Params["bulbKind"], { dia: number; len: number; label: string }> = {
-  a60: { dia: 60, len: 110, label: "A60" },
-  g95: { dia: 95, len: 135, label: "G95" },
-  st64: { dia: 64, len: 143, label: "ST64" },
-  gu10: { dia: 50, len: 55, label: "GU10" },
-  "led-strip": { dia: 32, len: 90, label: "LED filament" },
-};
+// Bulb envelopes and section profiles live in bulbs.ts — real product geometry, one source of
+// truth for the 3D preview, the silhouette editor's section cut, and the clearance lint below.
 
 // Minimum air gap from glass to plastic, by power. FDM PLA softens near 60 °C, so a hot bulb needs
 // real distance; LED at low power needs little. Linear in watts with a floor.
@@ -329,25 +323,34 @@ function countHoles(p: Params, curve: readonly CtrlPt[]): number {
   return n;
 }
 
-// Glass-to-plastic clearance: the smallest distance from the bulb envelope to the shade's INNER
-// face over the bulb's vertical span. The radius is the modulated minimum (section, flutes and
-// waves all included — flutes cut real millimetres the silhouette doesn't show), and the wall is
-// subtracted because the inner face, not the outer, is what a bulb can touch.
+// Glass-to-plastic clearance: the smallest distance from the bulb's REAL section profile to the
+// shade's INNER face. The wall radius is the modulated minimum (section, flutes and waves all
+// included — flutes cut real millimetres the silhouette doesn't show), and the wall thickness is
+// subtracted because the inner face, not the outer, is what a bulb can touch. Both curves are
+// coaxial surfaces of revolution, so the 2D section distance IS the true 3D clearance — which
+// also catches what the old radius-only check could not: a shade closing in just above the glass
+// tip, or hot glass grazing a rim edge it pokes through.
 //
 // Single-slot memo in the countHoles() pattern: with flutes on, the modulated minimum walks the
-// section for each of the 33 z samples — too much to repeat several times per frame during a drag.
+// section for each of the 65 z samples — too much to repeat several times per frame during a drag.
 let gapMemo: { key: string; curve: readonly CtrlPt[]; gap: number } | null = null;
 
 // `bulbCentreZ` is in the LAYER's own frame (bed = 0). A single shade IS the assembly, so the
 // default is today's p.bulbZ × height; a lifted layer in a stack passes the assembly-derived
-// position instead. A bulb whose span misses the layer entirely yields +Infinity — no glass near
-// this wall means no clearance concern, not "measure the narrowest point anyway".
+// position instead. A bulb far outside the layer's padded window yields +Infinity — no glass
+// anywhere near this wall means no clearance concern.
 function bulbGapOf(p: Params, curve: readonly CtrlPt[], bulbCentreZ = p.bulbZ * p.height): number {
   const bulb = BULBS[p.bulbKind];
   const wall = effectiveWall(p);
+  const capUp = bulbCapUp(p.fitterZ, p.bulbZ);
+  // The wall window worth checking: beyond the bulb by more than the largest gap that could
+  // still warn, distance cannot matter. Padded by that bound so the tips see nearby rims.
+  const pad = Math.max(40, minBulbGap(p.watts));
   const key = [
     p.bulbKind,
     bulbCentreZ,
+    capUp,
+    pad,
     p.height,
     p.girth,
     p.sectionKind,
@@ -361,13 +364,16 @@ function bulbGapOf(p: Params, curve: readonly CtrlPt[], bulbCentreZ = p.bulbZ * 
   ].join("|");
   if (gapMemo && gapMemo.key === key && gapMemo.curve === curve) return gapMemo.gap;
 
-  const z0 = bulbCentreZ - bulb.len / 2;
-  const z1 = bulbCentreZ + bulb.len / 2;
+  const z0 = Math.max(0, bulbCentreZ - bulb.len / 2 - pad);
+  const z1 = Math.min(p.height, bulbCentreZ + bulb.len / 2 + pad);
   let gap = Number.POSITIVE_INFINITY;
-  for (let k = 0; k <= 32; k++) {
-    const z = z0 + ((z1 - z0) * k) / 32;
-    if (z < 0 || z > p.height) continue; // outside the shade: not a clearance concern
-    gap = Math.min(gap, minSurfaceRadiusAt(p, curve, z / p.height) - wall - bulb.dia / 2);
+  if (z1 > z0) {
+    const inner: [number, number][] = [];
+    for (let k = 0; k <= 64; k++) {
+      const z = z0 + ((z1 - z0) * k) / 64;
+      inner.push([minSurfaceRadiusAt(p, curve, z / p.height) - wall, z]);
+    }
+    gap = sectionGap(bulbSectionWorld(p.bulbKind, bulbCentreZ, capUp), inner);
   }
   gapMemo = { key, curve, gap };
   return gap;
