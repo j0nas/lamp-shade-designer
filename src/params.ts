@@ -21,6 +21,10 @@ import {
 export const schema = defineParams({
   // --- form -------------------------------------------------------------------------------
   height: num({ def: 200, min: 40, max: 480, step: 1, group: "form", label: "Height", unit: "mm" }),
+  // Where this layer's bottom rim sits in the assembled lamp. Purely an assembly offset: the part
+  // itself is still built base-on-bed, so exports are unaffected — but bulb clearance, the fitter
+  // plane and the layered preview all see it.
+  lift: num({ def: 0, min: 0, max: 400, step: 1, group: "form", label: "Lift", unit: "mm" }),
   girth: num({
     def: 1,
     min: 0.3,
@@ -215,6 +219,40 @@ export const schema = defineParams({
 
 export type Params = Infer<typeof schema>;
 
+// --- layer/global partition ----------------------------------------------------------------------
+// One lamp is N printed shells around ONE light and ONE mount, so the schema splits by scope: the
+// light and fitter fields describe the assembly, everything else describes a single shell. The
+// schema itself stays flat — every consumer (builders, dims, tests) keeps working on a full Params —
+// and a layer stores just its subset, merged back over the shared globals when it is built.
+
+export const GLOBAL_KEYS = [
+  "bulbKind",
+  "watts",
+  "bulbZ",
+  "fitterKind",
+  "fitterBore",
+  "fitterThickness",
+  "fitterSpokes",
+  "fitterZ",
+] as const;
+
+export type GlobalKey = (typeof GLOBAL_KEYS)[number];
+export type GlobalParams = Pick<Params, GlobalKey>;
+export type LayerParams = Omit<Params, GlobalKey>;
+
+const isGlobalKey = (k: string): k is GlobalKey => (GLOBAL_KEYS as readonly string[]).includes(k);
+
+export function splitParams(p: Params): { layer: LayerParams; globals: GlobalParams } {
+  const layer: Record<string, unknown> = {};
+  const globals: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(p)) (isGlobalKey(k) ? globals : layer)[k] = v;
+  return { layer: layer as LayerParams, globals: globals as GlobalParams };
+}
+
+export function mergeParams(globals: GlobalParams, layer: LayerParams): Params {
+  return { ...layer, ...globals } as Params;
+}
+
 // --- bulb envelopes: real glass dimensions, so clearance is guaranteed rather than remembered ----
 // Diameter × length in mm, measured from the socket shoulder.
 export const BULBS: Record<Params["bulbKind"], { dia: number; len: number; label: string }> = {
@@ -300,12 +338,16 @@ function countHoles(p: Params, curve: readonly CtrlPt[]): number {
 // section for each of the 33 z samples — too much to repeat several times per frame during a drag.
 let gapMemo: { key: string; curve: readonly CtrlPt[]; gap: number } | null = null;
 
-function bulbGapOf(p: Params, curve: readonly CtrlPt[]): number {
+// `bulbCentreZ` is in the LAYER's own frame (bed = 0). A single shade IS the assembly, so the
+// default is today's p.bulbZ × height; a lifted layer in a stack passes the assembly-derived
+// position instead. A bulb whose span misses the layer entirely yields +Infinity — no glass near
+// this wall means no clearance concern, not "measure the narrowest point anyway".
+function bulbGapOf(p: Params, curve: readonly CtrlPt[], bulbCentreZ = p.bulbZ * p.height): number {
   const bulb = BULBS[p.bulbKind];
   const wall = effectiveWall(p);
   const key = [
     p.bulbKind,
-    p.bulbZ,
+    bulbCentreZ,
     p.height,
     p.girth,
     p.sectionKind,
@@ -319,7 +361,6 @@ function bulbGapOf(p: Params, curve: readonly CtrlPt[]): number {
   ].join("|");
   if (gapMemo && gapMemo.key === key && gapMemo.curve === curve) return gapMemo.gap;
 
-  const bulbCentreZ = p.bulbZ * p.height;
   const z0 = bulbCentreZ - bulb.len / 2;
   const z1 = bulbCentreZ + bulb.len / 2;
   let gap = Number.POSITIVE_INFINITY;
@@ -327,11 +368,6 @@ function bulbGapOf(p: Params, curve: readonly CtrlPt[]): number {
     const z = z0 + ((z1 - z0) * k) / 32;
     if (z < 0 || z > p.height) continue; // outside the shade: not a clearance concern
     gap = Math.min(gap, minSurfaceRadiusAt(p, curve, z / p.height) - wall - bulb.dia / 2);
-  }
-  if (!Number.isFinite(gap)) {
-    // Bulb entirely outside the shade's span: fall back to the narrowest point anywhere.
-    const secMin = sectionMin(p.sectionKind, p.sides, p.sectionDepth);
-    gap = minRadius(curve) * p.girth * secMin - wall - bulb.dia / 2;
   }
   gapMemo = { key, curve, gap };
   return gap;
@@ -355,12 +391,18 @@ export type Dims = {
 };
 
 // Everything derived lives here so the builders, the readout and the warnings can't disagree.
-export function dims(p: Params, curve: readonly CtrlPt[]): Dims {
+// `opts.bulbCentreZ` places the bulb in the layer's own frame when the layer is part of a lifted
+// stack; the default reproduces the single-shade behaviour exactly.
+export function dims(
+  p: Params,
+  curve: readonly CtrlPt[],
+  opts: { bulbCentreZ?: number } = {},
+): Dims {
   const maxR = maxRadius(curve) * p.girth;
   const minR = minRadius(curve) * p.girth;
   const bulb = BULBS[p.bulbKind];
-  const bulbCentreZ = p.bulbZ * p.height;
-  const bulbGap = bulbGapOf(p, curve);
+  const bulbCentreZ = opts.bulbCentreZ ?? p.bulbZ * p.height;
+  const bulbGap = bulbGapOf(p, curve, bulbCentreZ);
   const holeCount = countHoles(p, curve);
 
   return {

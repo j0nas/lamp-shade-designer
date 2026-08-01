@@ -20,6 +20,14 @@ function studioScene(): Scene {
 
 const params = (over: Partial<Params> = {}): Params => ({ ...defaults(schema), ...over });
 
+// One layer with the classic look — materials now come from syncLayerMaterials, one per layer.
+const look = (wall = 1.6, over: Partial<{ color: string; opacity: number }> = {}) => ({
+  color: "#f3ece0",
+  opacity: 1,
+  wall,
+  ...over,
+});
+
 describe("view modes", () => {
   test("CAD keeps the viewer's studio background; lamp swaps in the dark room", () => {
     const scene = studioScene();
@@ -64,21 +72,49 @@ describe("view modes", () => {
     expect(restored.slice(0, before.length)).toEqual(before);
   });
 
-  test("lamp mode drives the shade's glow from wall thinness; CAD leaves it unlit", () => {
+  test("lamp mode drives each layer's glow from ITS wall thinness; CAD leaves them unlit", () => {
     const scene = studioScene();
     const lighting = createLighting(scene);
 
-    lighting.update(params({ wall: 0.8, watts: 8 }), 200, 130);
+    const [mat] = lighting.syncLayerMaterials([look(0.8)]);
+    lighting.update(params({ watts: 8 }), 200, 130);
     lighting.setMode("lamp");
-    const thin = lighting.shadeMaterial.emissiveIntensity;
+    const thin = mat.emissiveIntensity;
 
-    lighting.update(params({ wall: 3.2, watts: 8 }), 200, 130);
-    const thick = lighting.shadeMaterial.emissiveIntensity;
+    lighting.syncLayerMaterials([look(3.2)]);
+    const thick = mat.emissiveIntensity;
     expect(thin).toBeGreaterThan(thick);
 
     lighting.setMode("cad");
-    expect(lighting.shadeMaterial.emissiveIntensity).toBe(0);
-    expect(lighting.shadeMaterial.transmission).toBe(0);
+    expect(mat.emissiveIntensity).toBe(0);
+    expect(mat.transmission).toBe(0);
+  });
+
+  test("layers carry their own colour, translucency and tinted glow", () => {
+    const scene = studioScene();
+    const lighting = createLighting(scene);
+    const [outer, inner] = lighting.syncLayerMaterials([
+      look(0.8, { opacity: 0.5 }),
+      look(1.6, { color: "#e01010" }),
+    ]);
+
+    // CAD: colours and translucency straight from the looks.
+    expect(outer.transparent).toBe(true);
+    expect(outer.opacity).toBe(0.5);
+    expect(inner.transparent).toBe(false);
+    expect(inner.color.getHexString()).toBe("e01010");
+
+    // Lamp: the glow is tinted by the layer's own colour — a red diffuser glows red, which is the
+    // whole reason to stack a coloured inner behind a translucent outer.
+    lighting.update(params({ watts: 8 }), 200, 130);
+    lighting.setMode("lamp");
+    expect(inner.emissiveIntensity).toBeGreaterThan(0);
+    expect(inner.emissive.r).toBeGreaterThan(inner.emissive.b * 4);
+
+    // Shrinking the stack disposes the dropped material and keeps the survivor.
+    const mats = lighting.syncLayerMaterials([look(0.8)]);
+    expect(mats).toHaveLength(1);
+    expect(mats[0]).toBe(outer);
   });
 
   test("overhang mode keeps the studio look and flips vertex colours on, exactly once", () => {
@@ -87,6 +123,7 @@ describe("view modes", () => {
       .filter((o) => "isLight" in o)
       .map((o) => (o as AmbientLight).intensity);
     const lighting = createLighting(scene);
+    const [mat] = lighting.syncLayerMaterials([look()]);
     lighting.update(params(), 200, 130);
 
     lighting.setMode("overhang");
@@ -97,44 +134,45 @@ describe("view modes", () => {
       .map((o) => (o as AmbientLight).intensity);
     expect(intensities.slice(0, before.length)).toEqual(before);
     // The material multiplies vertex colours against white, and stays unlit-from-within.
-    expect(lighting.shadeMaterial.vertexColors).toBe(true);
-    expect(lighting.shadeMaterial.color.getHex()).toBe(0xffffff);
-    expect(lighting.shadeMaterial.emissiveIntensity).toBe(0);
+    expect(mat.vertexColors).toBe(true);
+    expect(mat.color.getHex()).toBe(0xffffff);
+    expect(mat.emissiveIntensity).toBe(0);
 
     // apply() runs on every param change; the toggle must be change-guarded or every drag frame
     // recompiles the shader. Material.version only moves when needsUpdate is set.
-    const version = lighting.shadeMaterial.version;
+    const version = mat.version;
     lighting.update(params(), 200, 130);
     lighting.update(params({ wall: 2.4 }), 220, 140);
     lighting.setRoomBrightness(0.5);
-    expect(lighting.shadeMaterial.version).toBe(version);
+    expect(mat.version).toBe(version);
 
     lighting.setMode("cad");
-    expect(lighting.shadeMaterial.vertexColors).toBe(false);
-    expect(lighting.shadeMaterial.color.getHex()).toBe(SHADE_COLOR);
+    expect(mat.vertexColors).toBe(false);
+    expect(mat.color.getHex()).toBe(SHADE_COLOR);
   });
 });
 
 describe("section cut", () => {
   test("clips every render path of the shade — surface, depth and distance — change-guarded", () => {
     const lighting = createLighting(studioScene());
-    const mesh = shadeMesh(new BufferGeometry(), lighting.shadeMaterial);
+    const [mat] = lighting.syncLayerMaterials([look()]);
+    const mesh = shadeMesh(new BufferGeometry(), mat);
 
     setSectionCut([mesh], true);
-    expect(lighting.shadeMaterial.clippingPlanes).toHaveLength(1);
+    expect(mat.clippingPlanes).toHaveLength(1);
     // The shadow passes render with their own materials; an unclipped depth pass would cast the
     // WHOLE shade's shadow while the surface shows half — lamp mode's one job is truthful light.
     expect(mesh.customDepthMaterial?.clippingPlanes).toHaveLength(1);
     expect(mesh.customDistanceMaterial?.clippingPlanes).toHaveLength(1);
-    expect(lighting.shadeMaterial.clipShadows).toBe(true);
+    expect(mat.clipShadows).toBe(true);
 
     // Re-applying the same state must not recompile (version only moves via needsUpdate).
-    const version = lighting.shadeMaterial.version;
+    const version = mat.version;
     setSectionCut([mesh], true);
-    expect(lighting.shadeMaterial.version).toBe(version);
+    expect(mat.version).toBe(version);
 
     setSectionCut([mesh], false);
-    expect(lighting.shadeMaterial.clippingPlanes).toBeNull();
-    expect(lighting.shadeMaterial.version).toBe(version + 1);
+    expect(mat.clippingPlanes).toBeNull();
+    expect(mat.version).toBe(version + 1);
   });
 });

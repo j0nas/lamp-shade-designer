@@ -114,10 +114,12 @@ export function minSurfaceRadiusAt(p: SurfaceParams, curve: readonly CtrlPt[], v
 // either way — an inward overhang sags exactly like an outward one. Rim rows are excluded: v = 0
 // and v = 1 sit on the annuli, whose normals are ±Z by construction and would always read 90°.
 //
-// Single-slot memo in the countHoles() pattern: the lint composition runs per frame during a
-// drag, and the curve is compared by reference — every edit swaps the whole array, so that is
-// exact rather than approximate.
-let overhangMemo: { key: string; curve: readonly CtrlPt[]; deg: number } | null = null;
+// Small ring memo in the countHoles() pattern, sized for a layered design: the lint composition
+// runs per frame during a drag and asks once PER LAYER, so a single slot would thrash the moment
+// a second layer exists. Curves are compared by reference — every edit swaps the whole array, so
+// that is exact rather than approximate.
+const overhangMemo: { key: string; curve: readonly CtrlPt[]; deg: number }[] = [];
+const OVERHANG_MEMO_MAX = 8;
 
 export function maxOverhangDeg(
   p: SurfaceParams,
@@ -138,9 +140,8 @@ export function maxOverhangDeg(
     samples.u,
     samples.v,
   ].join("|");
-  if (overhangMemo && overhangMemo.key === key && overhangMemo.curve === curve) {
-    return overhangMemo.deg;
-  }
+  const hit = overhangMemo.find((m) => m.key === key && m.curve === curve);
+  if (hit) return hit.deg;
   const surface = makeSurface(p, curve);
   let worst = 0;
   for (let j = 1; j < samples.v; j++) {
@@ -149,7 +150,8 @@ export function maxOverhangDeg(
     }
   }
   const deg = (Math.asin(Math.min(1, worst)) * 180) / Math.PI;
-  overhangMemo = { key, curve, deg };
+  overhangMemo.push({ key, curve, deg });
+  if (overhangMemo.length > OVERHANG_MEMO_MAX) overhangMemo.shift();
   return deg;
 }
 

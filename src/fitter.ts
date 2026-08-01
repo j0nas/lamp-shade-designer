@@ -16,12 +16,13 @@ import type { CtrlPt } from "./curve.ts";
 import { effectiveWall, type Params, type Warning } from "./params.ts";
 import { minSurfaceRadiusAt } from "./surface.ts";
 import { annulus } from "./shapes.ts";
+import type { Assembly } from "./layers.ts";
 
 export type FitterKind = Params["fitterKind"];
 
 export type FitterSpec = {
   kind: FitterKind;
-  outerR: number; // press-fits inside the shade at fitterZ
+  outerR: number; // press-fits inside the (outermost) shade at fitterZ
   boreR: number; // central opening (socket collar, harp rod, or cord)
   thickness: number;
   rimWidth: number; // radial width of the outer band
@@ -30,19 +31,27 @@ export type FitterSpec = {
   armW: number; // arm width
   collarH: number; // raised collar above the plate (uno / pendant)
   gripR: number; // clip-on grip circle radius
+  // Locating ridges for the INNER layers of a stack: one raised ring per additional layer at the
+  // fitter plane, its outer face press-fitting that layer's inner surface, so one plate carries
+  // the whole assembly. Empty for a single shade — the geometry is then exactly the classic one.
+  supportRings: number[];
 };
 
 const CLEARANCE = 0.25; // press fit into the shade's inner surface
 const MIN_BAND = 4; // never leave a band thinner than this between bore and rim
+export const RIDGE_W = 1.8; // radial width of a support ridge
+export const RIDGE_H = 3; // how far a ridge stands above the plate — enough to locate, not to show
 
-export function fitterSpec(p: Params, curve: readonly CtrlPt[]): FitterSpec {
-  const wall = effectiveWall(p);
-  // The ring sits inside the shade's opening, so it must clear the MODULATED minimum radius at the
-  // mount height — section, flutes and waves all included. The silhouette alone overstates that by
-  // up to fluteDepth + waveDepth/2, which against a 0.25 mm press fit is not a rounding error but a
-  // part that will not go in.
-  const shadeInner = minSurfaceRadiusAt(p, curve, p.fitterZ) - wall;
-  const outerR = Math.max(10, shadeInner - CLEARANCE);
+// The press radius against one layer's inner surface at a height fraction of that layer.
+// MODULATED minimum radius — section, flutes and waves all included. The silhouette alone
+// overstates it by up to fluteDepth + waveDepth/2, which against a 0.25 mm press fit is not a
+// rounding error but a part that will not go in.
+function pressRadius(p: Params, curve: readonly CtrlPt[], v: number): number {
+  return minSurfaceRadiusAt(p, curve, v) - effectiveWall(p) - CLEARANCE;
+}
+
+function specAt(p: Params, curve: readonly CtrlPt[], v: number): FitterSpec {
+  const outerR = Math.max(10, pressRadius(p, curve, v));
   const boreR = Math.max(2, Math.min(p.fitterBore / 2, outerR - MIN_BAND));
   const span = outerR - boreR;
   return {
@@ -56,7 +65,33 @@ export function fitterSpec(p: Params, curve: readonly CtrlPt[]): FitterSpec {
     armW: Math.max(3, Math.min(7, span * 0.3)),
     collarH: Math.max(4, p.fitterThickness * 2),
     gripR: Math.max(3, boreR * 0.62), // ~E27 bulb neck when the bore is a shade ring
+    supportRings: [],
   };
+}
+
+export function fitterSpec(p: Params, curve: readonly CtrlPt[]): FitterSpec {
+  return specAt(p, curve, p.fitterZ);
+}
+
+// The one fitter for a layered assembly. The plate press-fits the OUTERMOST layer present at the
+// fitter plane; every further layer whose span crosses the plane gets a support ridge at its own
+// press radius. A ridge that would collide with the bore or the rim is dropped rather than
+// clamped — the layer still rests on the plate, it just isn't radially located.
+// Takes the structural subset of Assembly so the worker can feed it resolved layers without
+// paying for the full dims derivation.
+export function fitterSpecAssembly(a: Pick<Assembly, "layers" | "fitterZ">): FitterSpec {
+  const atPlane = a.layers.filter((l) => a.fitterZ >= l.z0 - 0.01 && a.fitterZ <= l.z1 + 0.01);
+  const carried = atPlane.length > 0 ? atPlane : [a.layers[0]];
+  const vOf = (l: (typeof carried)[number]) =>
+    Math.min(1, Math.max(0, (a.fitterZ - l.z0) / Math.max(1e-9, l.z1 - l.z0)));
+
+  const mount = carried[0]; // layers run outermost-first
+  const spec = specAt(mount.params, mount.curve, vOf(mount));
+  for (const l of carried.slice(1)) {
+    const r = pressRadius(l.params, l.curve, vOf(l));
+    if (r >= spec.boreR + RIDGE_W + 0.5 && r <= spec.outerR - 1.2) spec.supportRings.push(r);
+  }
+  return spec;
 }
 
 // Column-major Z rotation, for placing radial arms.
@@ -89,7 +124,10 @@ function spokedPlate(s: ReturnType<typeof scope>, f: FitterSpec, hubInnerR: numb
 }
 
 export function buildFitter(p: Params, curve: readonly CtrlPt[]): BufferGeometry {
-  const f = fitterSpec(p, curve);
+  return buildFitterFromSpec(fitterSpec(p, curve));
+}
+
+export function buildFitterFromSpec(f: FitterSpec): BufferGeometry {
   const s = scope();
   const t = f.thickness;
   let body: Solid;
@@ -132,19 +170,26 @@ export function buildFitter(p: Params, curve: readonly CtrlPt[]): BufferGeometry
     }
   }
 
+  // Support ridges stand ON TOP of the plate so each inner shade of a stack drops over its ring
+  // and locates radially. On spoked kinds the ring bridges the openings between spokes — a 3 mm
+  // wall over short spans, well within FDM bridging. Print orientation is unchanged: plate down.
+  for (const r of f.supportRings) {
+    body = s.add(body, s.move(s.extrude(annulus(r - RIDGE_W, r), RIDGE_H, 48), 0, 0, t));
+  }
+
   // A locating chamfer would be nice here; Manifold has no edge fillet, which is exactly the kind of
   // thing the STEP path could add via replicad's fillet() if you want it on the machined version.
   return s.finish(body);
 }
 
-// The fitter's own lint. Kept here rather than in params.ts because this module imports params.ts
-// at runtime (effectiveWall) — lint.ts composes the full list.
-export function fitterWarnings(p: Params, curve: readonly CtrlPt[]): Warning[] {
-  const f = fitterSpec(p, curve);
+// The fitter's own lint, spec-level so the single-shade and assembly paths share it. Kept here
+// rather than in params.ts because this module imports params.ts at runtime (effectiveWall) —
+// lint.ts composes the full list.
+export function fitterSpecWarnings(f: FitterSpec, requestedBoreMm: number): Warning[] {
   const out: Warning[] = [];
-  if (f.boreR * 2 < p.fitterBore - 0.01) {
+  if (f.boreR * 2 < requestedBoreMm - 0.01) {
     out.push({
-      text: `The shade is only ${(f.outerR * 2).toFixed(0)} mm across at the mount height, so the ${p.fitterBore} mm bore was reduced to ${(f.boreR * 2).toFixed(0)} mm. Lower the mount, widen the shade, or use a smaller socket.`,
+      text: `The shade is only ${(f.outerR * 2).toFixed(0)} mm across at the mount height, so the ${requestedBoreMm} mm bore was reduced to ${(f.boreR * 2).toFixed(0)} mm. Lower the mount, widen the shade, or use a smaller socket.`,
       bad: f.boreR <= 2.01,
     });
   }
@@ -154,8 +199,12 @@ export function fitterWarnings(p: Params, curve: readonly CtrlPt[]): Warning[] {
       bad: true,
     });
   }
-  if (p.fitterKind === "spider" && f.hubR >= f.outerR - f.rimWidth) {
+  if (f.kind === "spider" && f.hubR >= f.outerR - f.rimWidth) {
     out.push({ text: "Hub reaches the rim; the spokes have no length.", bad: true });
   }
   return out;
+}
+
+export function fitterWarnings(p: Params, curve: readonly CtrlPt[]): Warning[] {
+  return fitterSpecWarnings(fitterSpec(p, curve), p.fitterBore);
 }

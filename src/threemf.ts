@@ -9,9 +9,25 @@
 // equivalent binary STL. Everything here is pure bytes-in-bytes-out, so it runs identically in
 // the export worker and in Node tests.
 
-export type Mesh3mf = {
+export type Object3mf = {
   verts: Float32Array; // xyz triples, millimetres
   tris: Uint32Array | Uint16Array; // vertex-index triples, CCW from outside
+  name: string; // object name the slicer shows
+  color?: string; // #rrggbb — displaycolor, what a multi-material slicer maps filaments by
+};
+
+// One package, N objects: a layered shade exports every shell into a single 3MF, each as its own
+// named, coloured object, all at the origin — nested exactly as designed, which is also the
+// printable arrangement on a multi-nozzle machine (and trivially separable in any slicer).
+export type Model3mf = {
+  objects: Object3mf[];
+  title: string;
+  app: string;
+};
+
+export type Mesh3mf = {
+  verts: Float32Array;
+  tris: Uint32Array | Uint16Array;
   title: string;
   app: string;
 };
@@ -39,26 +55,47 @@ const escapeXml = (s: string): string =>
 // halves the XML next to printing full doubles.
 const fmt = (x: number): string => x.toFixed(3).replace(/\.?0+$/, "");
 
-function modelXml(m: Mesh3mf): string {
+function modelXml(m: Model3mf): string {
+  // Colours ride in a basematerials group each object indexes into. When no object carries one the
+  // group is omitted entirely and ids start at 1 — a single plain mesh reads exactly as it always
+  // has (and stays what strict single-object importers were tested against).
+  const withColors = m.objects.some((o) => o.color);
+  const firstObjId = withColors ? 2 : 1;
   const parts: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
       '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n' +
       `<metadata name="Title">${escapeXml(m.title)}</metadata>\n` +
       `<metadata name="Application">${escapeXml(m.app)}</metadata>\n` +
-      '<resources><object id="1" type="model"><mesh>\n<vertices>\n',
+      "<resources>\n",
   ];
-  for (let i = 0; i < m.verts.length; i += 3) {
+  if (withColors) {
+    parts.push('<basematerials id="1">\n');
+    for (const o of m.objects) {
+      parts.push(
+        `<base name="${escapeXml(o.name)}" displaycolor="${(o.color ?? "#cccccc").toUpperCase()}"/>\n`,
+      );
+    }
+    parts.push("</basematerials>\n");
+  }
+  m.objects.forEach((o, k) => {
+    const mat = withColors ? ` pid="1" pindex="${k}"` : "";
     parts.push(
-      `<vertex x="${fmt(m.verts[i])}" y="${fmt(m.verts[i + 1])}" z="${fmt(m.verts[i + 2])}"/>\n`,
+      `<object id="${firstObjId + k}" type="model" name="${escapeXml(o.name)}"${mat}><mesh>\n<vertices>\n`,
     );
-  }
-  parts.push("</vertices>\n<triangles>\n");
-  for (let i = 0; i < m.tris.length; i += 3) {
-    parts.push(`<triangle v1="${m.tris[i]}" v2="${m.tris[i + 1]}" v3="${m.tris[i + 2]}"/>\n`);
-  }
-  parts.push(
-    '</triangles>\n</mesh></object></resources>\n<build><item objectid="1"/></build>\n</model>\n',
-  );
+    for (let i = 0; i < o.verts.length; i += 3) {
+      parts.push(
+        `<vertex x="${fmt(o.verts[i])}" y="${fmt(o.verts[i + 1])}" z="${fmt(o.verts[i + 2])}"/>\n`,
+      );
+    }
+    parts.push("</vertices>\n<triangles>\n");
+    for (let i = 0; i < o.tris.length; i += 3) {
+      parts.push(`<triangle v1="${o.tris[i]}" v2="${o.tris[i + 1]}" v3="${o.tris[i + 2]}"/>\n`);
+    }
+    parts.push("</triangles>\n</mesh></object>\n");
+  });
+  parts.push("</resources>\n<build>\n");
+  m.objects.forEach((_, k) => parts.push(`<item objectid="${firstObjId + k}"/>\n`));
+  parts.push("</build>\n</model>\n");
   return parts.join("");
 }
 
@@ -153,11 +190,19 @@ function storedZip(entries: ZipEntry[]): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-export function meshTo3mf(m: Mesh3mf): Uint8Array<ArrayBuffer> {
+export function modelTo3mf(m: Model3mf): Uint8Array<ArrayBuffer> {
   const enc = new TextEncoder();
   return storedZip([
     { name: "[Content_Types].xml", data: enc.encode(CONTENT_TYPES) },
     { name: "_rels/.rels", data: enc.encode(RELS) },
     { name: "3D/3dmodel.model", data: enc.encode(modelXml(m)) },
   ]);
+}
+
+export function meshTo3mf(m: Mesh3mf): Uint8Array<ArrayBuffer> {
+  return modelTo3mf({
+    objects: [{ verts: m.verts, tris: m.tris, name: m.title }],
+    title: m.title,
+    app: m.app,
+  });
 }

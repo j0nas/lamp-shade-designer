@@ -1,10 +1,12 @@
 // The design file format, the share-link codec, the library and the STL header stamp — all pure,
 // so no initCSG here. The one rule under test throughout: every way a design can enter the app
 // funnels through sanitizeDesign, and only a wrong ENVELOPE rejects; malformed fields degrade.
+// Version 1 files (flat params + one curve) must keep opening as a single-layer v2 design.
 import { describe, expect, test } from "vite-plus/test";
 import { defaults, type StorageLike } from "parametric-kit/params";
 import { familyCurve, MAX_CURVE_PTS } from "./curve.ts";
-import { type Params, schema } from "./params.ts";
+import { type Params, schema, splitParams } from "./params.ts";
+import { defaultLayer, type Design, MAX_LAYERS } from "./layers.ts";
 import {
   createLibrary,
   decodeDesignHash,
@@ -19,13 +21,40 @@ import {
 const params = (over: Partial<Params> = {}): Params => ({ ...defaults(schema), ...over });
 const curve = familyCurve("empire");
 
+// A one-layer design from flat params — the shape most tests need.
+function design(over: Partial<Params> = {}, layers = 1): Design {
+  const split = splitParams(params(over));
+  const first = { ...defaultLayer(), params: split.layer, curve: curve.map((p) => ({ ...p })) };
+  const rest = Array.from({ length: layers - 1 }, (_, i) => ({
+    ...defaultLayer(),
+    color: "#e08a3c",
+    link: "nest" as const,
+    gap: 5 + i,
+    params: { ...split.layer },
+    curve: curve.map((p) => ({ ...p })),
+  }));
+  return { globals: split.globals, layers: [first, ...rest] };
+}
+
 describe("design files", () => {
   test("a saved design round-trips through JSON unchanged", () => {
-    const d = makeDesign("Aurora v2", params({ height: 320, twistDeg: 90 }), curve, {
+    const d = makeDesign("Aurora v2", design({ height: 320, twistDeg: 90 }), {
       now: new Date("2026-07-31T12:00:00Z"),
     });
     const back = sanitizeDesign(JSON.parse(JSON.stringify(d)));
     expect(back).toEqual(d);
+  });
+
+  test("a layered design round-trips, nest link and appearance included", () => {
+    const d = makeDesign("Stacked", design({ height: 260 }, 3), {
+      now: new Date("2026-07-31T12:00:00Z"),
+    });
+    const back = sanitizeDesign(JSON.parse(JSON.stringify(d)));
+    expect(back).toEqual(d);
+    expect(back?.layers).toHaveLength(3);
+    expect(back?.layers[1].link).toBe("nest");
+    expect(back?.layers[1].gap).toBe(5);
+    expect(back?.layers[1].color).toBe("#e08a3c");
   });
 
   test("only a wrong envelope rejects; malformed fields degrade", () => {
@@ -34,26 +63,47 @@ describe("design files", () => {
     expect(sanitizeDesign("junk")).toBeNull();
     expect(sanitizeDesign({})).toBeNull();
     expect(sanitizeDesign({ format: "other-app", version: 1 })).toBeNull();
-    expect(sanitizeDesign({ format: "lamp-shade-design", version: 2 })).toBeNull();
+    expect(sanitizeDesign({ format: "lamp-shade-design", version: 3 })).toBeNull();
 
     // Right envelope with garbage fields: everything degrades per the sanitize contracts.
     const d = sanitizeDesign({
       format: "lamp-shade-design",
-      version: 1,
+      version: 2,
       name: 42,
       savedAt: "not a date",
-      params: { height: "tall", twistDeg: 90 },
-      curve: "nope",
+      globals: { watts: "many" },
+      layers: [{ color: "not-a-colour", opacity: "solid", params: { height: "tall" }, curve: "nope" }],
     });
     expect(d).not.toBeNull();
     expect(d?.name).toBe("untitled");
     expect(Number.isNaN(Date.parse(d!.savedAt))).toBe(false);
-    expect(d?.params.height).toBe(defaults(schema).height); // typeof mismatch keeps the default
-    expect(d?.params.twistDeg).toBe(90); // well-formed field survives
-    expect(d?.curve).toEqual(familyCurve("empire")); // curve fallback is the default family
+    expect(d?.globals.watts).toBe(defaults(schema).watts);
+    expect(d?.layers[0].params.height).toBe(defaults(schema).height);
+    expect(d?.layers[0].opacity).toBe(1);
+    expect(d?.layers[0].color).toMatch(/^#[0-9a-f]{6}$/);
+    expect(d?.layers[0].curve).toEqual(familyCurve("empire")); // curve fallback is the default family
   });
 
-  test("the slots migration applies to imported files, not just localStorage", () => {
+  test("a v1 file opens as a single-layer design with identical fields", () => {
+    const d = sanitizeDesign({
+      format: "lamp-shade-design",
+      version: 1,
+      name: "legacy",
+      savedAt: "2026-01-01T00:00:00.000Z",
+      params: params({ height: 320, twistDeg: 90, watts: 12 }),
+      curve,
+    });
+    expect(d).not.toBeNull();
+    expect(d?.version).toBe(2);
+    expect(d?.layers).toHaveLength(1);
+    expect(d?.layers[0].params.height).toBe(320); // layer field landed on the layer
+    expect(d?.layers[0].params.twistDeg).toBe(90);
+    expect(d?.globals.watts).toBe(12); // global field landed on the globals
+    expect(d?.layers[0].link).toBe("free");
+    expect(d?.layers[0].curve).toEqual(curve);
+  });
+
+  test("the slots migration applies to imported v1 files, not just localStorage", () => {
     const d = sanitizeDesign({
       format: "lamp-shade-design",
       version: 1,
@@ -61,16 +111,39 @@ describe("design files", () => {
       params: { ...defaults(schema), perfPattern: "slots" },
       curve,
     });
-    expect(d?.params.perfPattern).toBe("grid");
-    expect(d?.params.perfShape).toBe("slot");
-    expect(d?.params.perfEven).toBe(false);
+    expect(d?.layers[0].params.perfPattern).toBe("grid");
+    expect(d?.layers[0].params.perfShape).toBe("slot");
+    expect(d?.layers[0].params.perfEven).toBe(false);
+  });
+
+  test("layer 0 can never be nested, and layer count caps at MAX_LAYERS", () => {
+    const many = Array.from({ length: MAX_LAYERS + 3 }, () => ({
+      ...defaultLayer(),
+      link: "nest",
+    }));
+    const d = sanitizeDesign({
+      format: "lamp-shade-design",
+      version: 2,
+      name: "deep",
+      globals: {},
+      layers: many,
+    });
+    expect(d?.layers).toHaveLength(MAX_LAYERS);
+    expect(d?.layers[0].link).toBe("free"); // nothing outside it to nest in
+    expect(d?.layers[1].link).toBe("nest");
+  });
+
+  test("a v2 file with no layers gets the default layer rather than an empty stack", () => {
+    const d = sanitizeDesign({ format: "lamp-shade-design", version: 2, name: "bare", layers: [] });
+    expect(d?.layers).toHaveLength(1);
+    expect(d?.layers[0].params.height).toBe(defaults(schema).height);
   });
 
   test("names are trimmed, capped at 80 chars, and default to untitled", () => {
-    expect(makeDesign("  Aurora  ", params(), curve).name).toBe("Aurora");
-    expect(makeDesign("", params(), curve).name).toBe("untitled");
-    expect(makeDesign("   ", params(), curve).name).toBe("untitled");
-    expect(makeDesign("x".repeat(200), params(), curve).name).toHaveLength(80);
+    expect(makeDesign("  Aurora  ", design()).name).toBe("Aurora");
+    expect(makeDesign("", design()).name).toBe("untitled");
+    expect(makeDesign("   ", design()).name).toBe("untitled");
+    expect(makeDesign("x".repeat(200), design()).name).toHaveLength(80);
   });
 
   test("an oversized imported curve is capped with both rims pinned", () => {
@@ -82,15 +155,15 @@ describe("design files", () => {
       params: defaults(schema),
       curve: huge,
     });
-    expect(d?.curve).toHaveLength(MAX_CURVE_PTS);
-    expect(d?.curve[0].v).toBe(0);
-    expect(d?.curve[MAX_CURVE_PTS - 1].v).toBe(1);
+    expect(d?.layers[0].curve).toHaveLength(MAX_CURVE_PTS);
+    expect(d?.layers[0].curve[0].v).toBe(0);
+    expect(d?.layers[0].curve[MAX_CURVE_PTS - 1].v).toBe(1);
   });
 });
 
 describe("share links", () => {
   test("encode/decode round-trips, unicode names included", () => {
-    const d = makeDesign("Nørdlys ✨ 灯", params({ height: 260 }), curve, {
+    const d = makeDesign("Nørdlys ✨ 灯", design({ height: 260 }, 2), {
       now: new Date("2026-07-31T12:00:00Z"),
     });
     const hash = encodeDesignHash(d);
@@ -122,14 +195,14 @@ describe("the library", () => {
 
   test("put/get/remove round-trip, and put upserts by name", () => {
     const lib = createLibrary(fakeStorage());
-    lib.put(makeDesign("a", params({ height: 100 }), curve, at("2026-01-01T00:00:00Z")));
-    lib.put(makeDesign("b", params(), curve, at("2026-01-02T00:00:00Z")));
-    expect(lib.get("a")?.params.height).toBe(100);
+    lib.put(makeDesign("a", design({ height: 100 }), at("2026-01-01T00:00:00Z")));
+    lib.put(makeDesign("b", design(), at("2026-01-02T00:00:00Z")));
+    expect(lib.get("a")?.layers[0].params.height).toBe(100);
     expect(lib.get("missing")).toBeNull();
 
-    lib.put(makeDesign("a", params({ height: 300 }), curve, at("2026-01-03T00:00:00Z")));
+    lib.put(makeDesign("a", design({ height: 300 }), at("2026-01-03T00:00:00Z")));
     expect(lib.list()).toHaveLength(2); // upsert, not append
-    expect(lib.get("a")?.params.height).toBe(300);
+    expect(lib.get("a")?.layers[0].params.height).toBe(300);
 
     lib.remove("a");
     expect(lib.get("a")).toBeNull();
@@ -138,9 +211,9 @@ describe("the library", () => {
 
   test("list is sorted newest-saved first", () => {
     const lib = createLibrary(fakeStorage());
-    lib.put(makeDesign("old", params(), curve, at("2026-01-01T00:00:00Z")));
-    lib.put(makeDesign("new", params(), curve, at("2026-06-01T00:00:00Z")));
-    lib.put(makeDesign("mid", params(), curve, at("2026-03-01T00:00:00Z")));
+    lib.put(makeDesign("old", design(), at("2026-01-01T00:00:00Z")));
+    lib.put(makeDesign("new", design(), at("2026-06-01T00:00:00Z")));
+    lib.put(makeDesign("mid", design(), at("2026-03-01T00:00:00Z")));
     expect(lib.list().map((d) => d.name)).toEqual(["new", "mid", "old"]);
   });
 
@@ -149,7 +222,7 @@ describe("the library", () => {
     storage.map.set(DESIGNS_KEY, "{not json");
     expect(createLibrary(storage).list()).toEqual([]);
 
-    const good = makeDesign("good", params(), curve);
+    const good = makeDesign("good", design());
     storage.map.set(DESIGNS_KEY, JSON.stringify([good, { format: "other" }, 42]));
     expect(createLibrary(storage).list()).toEqual([good]);
   });
@@ -167,7 +240,7 @@ describe("the library", () => {
       },
     };
     const lib = createLibrary(angry);
-    expect(() => lib.put(makeDesign("a", params(), curve))).not.toThrow();
+    expect(() => lib.put(makeDesign("a", design()))).not.toThrow();
     expect(lib.list()).toEqual([]);
     // And no storage at all (plain Node) degrades the same way.
     expect(createLibrary(undefined).list()).toEqual([]);

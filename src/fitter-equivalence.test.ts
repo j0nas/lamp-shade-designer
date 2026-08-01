@@ -9,7 +9,7 @@ import { defaults } from "parametric-kit/params";
 import { bbox, volume } from "parametric-kit/testkit";
 import { familyCurve } from "./curve.ts";
 import { type Params, schema } from "./params.ts";
-import { buildFitter, type FitterKind, fitterSpec } from "./fitter.ts";
+import { buildFitter, buildFitterFromSpec, type FitterKind, fitterSpec, RIDGE_H } from "./fitter.ts";
 import { buildFitterShape, initSTEP } from "./fitter-step.ts";
 
 const curve = familyCurve("empire");
@@ -59,6 +59,27 @@ describe("both kernels agree on the fitter", () => {
       0,
       6,
     );
+  });
+
+  test("support rings (layered assemblies) exist identically in both kernels", () => {
+    const p = base({ fitterKind: "spider", fitterZ: 0.95 });
+    const bare = fitterSpec(p, curve);
+    const ringed = { ...bare, supportRings: [bare.boreR + 12, bare.outerR - 8] };
+
+    const meshDelta = volume(buildFitterFromSpec(ringed)) - volume(buildFitterFromSpec(bare));
+    const brepDelta =
+      replicad.measureVolume(buildFitterShape(replicad, ringed)) -
+      replicad.measureVolume(buildFitterShape(replicad, bare));
+    // Two raised locating ridges of identical nominal dimensions; the deltas agree within the
+    // usual polygon-vs-analytic faceting margin.
+    expect(meshDelta).toBeGreaterThan(0);
+    expect(brepDelta / meshDelta).toBeGreaterThan(0.98);
+    expect(brepDelta / meshDelta).toBeLessThan(1.05);
+
+    // Ridges stand ON the plate: the part grows upward by RIDGE_H, never below z = 0.
+    const b = bbox(buildFitterFromSpec(ringed));
+    expect(b.min[2]).toBeCloseTo(0, 6);
+    expect(b.max[2]).toBeCloseTo(bare.thickness + RIDGE_H, 4);
   });
 
   test("spoke count changes both builders the same way", () => {

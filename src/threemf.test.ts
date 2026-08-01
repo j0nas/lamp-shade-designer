@@ -2,7 +2,7 @@
 // and central-directory offsets, because a wrong CRC makes strict unzippers (and some slicers)
 // reject the file — and the model XML must carry the mesh verbatim, in millimetres.
 import { describe, expect, test } from "vite-plus/test";
-import { crc32, meshTo3mf } from "./threemf.ts";
+import { crc32, meshTo3mf, modelTo3mf } from "./threemf.ts";
 
 // A tetrahedron: the smallest closed mesh, hand-checkable. The title exercises XML escaping.
 const TETRA = {
@@ -75,5 +75,47 @@ describe("meshTo3mf", () => {
     const xml = new TextDecoder().decode(entries.get("[Content_Types].xml")!.data);
     expect(xml).toContain('Extension="model"');
     expect(xml).toContain("3dmanufacturing-3dmodel+xml");
+  });
+});
+
+describe("modelTo3mf (layered)", () => {
+  const layered = modelTo3mf({
+    objects: [
+      { verts: TETRA.verts, tris: TETRA.tris, name: "Outer — Aurora", color: "#f3ece0" },
+      { verts: TETRA.verts, tris: TETRA.tris, name: "Inner — Aurora", color: "#e08a3c" },
+    ],
+    title: "Aurora",
+    app: "lamp-shade dev",
+  });
+  const xml = new TextDecoder().decode(readZip(layered).entries.get("3D/3dmodel.model")!.data);
+
+  test("each layer is its own named object with a build item", () => {
+    expect(xml.match(/<object /g)).toHaveLength(2);
+    expect(xml).toContain('name="Outer — Aurora"');
+    expect(xml).toContain('name="Inner — Aurora"');
+    expect(xml).toContain('<item objectid="2"/>');
+    expect(xml).toContain('<item objectid="3"/>');
+    // Both meshes ride along in full.
+    expect(xml.match(/<vertex /g)).toHaveLength(8);
+    expect(xml.match(/<triangle /g)).toHaveLength(8);
+  });
+
+  test("layer colours travel as basematerials the slicer maps filaments by", () => {
+    expect(xml).toContain('<basematerials id="1">');
+    expect(xml).toContain('displaycolor="#F3ECE0"');
+    expect(xml).toContain('displaycolor="#E08A3C"');
+    expect(xml).toContain('pid="1" pindex="0"');
+    expect(xml).toContain('pid="1" pindex="1"');
+  });
+
+  test("a single plain object keeps the classic ids — no material group, objectid 1", () => {
+    const plain = modelTo3mf({
+      objects: [{ verts: TETRA.verts, tris: TETRA.tris, name: "solo" }],
+      title: "solo",
+      app: "x",
+    });
+    const solo = new TextDecoder().decode(readZip(plain).entries.get("3D/3dmodel.model")!.data);
+    expect(solo).not.toContain("<basematerials");
+    expect(solo).toContain('<item objectid="1"/>');
   });
 });

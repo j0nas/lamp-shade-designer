@@ -4,6 +4,15 @@ A browser parametric designer for 3D-printable lamp shades, built on
 [parametric-kit](../parametric-kit). Design by dragging the silhouette and watching what the shade
 throws on a wall, then export STL for the shade and true B-rep **STEP** for the fitter.
 
+A design is a **stack of layers** — up to six nested shells, each a full shade definition (own
+silhouette, section, modulation, perforation, wall, colour, translucency) around one shared light
+and fitter. The canonical build: a perforated translucent outer skin over a solid coloured inner
+diffuser. A layer can nest (silhouette derived from the next-outer layer at a fixed air gap) or be
+fully free — including intersecting its neighbours, which is linted but never clamped, because
+interlocked shells are a legitimate multi-material print. The all-layers 3MF exports every shell as
+its own named, coloured object so a multi-nozzle slicer maps filaments per layer; the fitter grows
+one press ring per layer at the mount plane so a single plate carries the whole assembly.
+
 ## Why not Fusion 360
 
 Two things this does that a CAD package structurally cannot:
@@ -27,15 +36,19 @@ surface.ts      S(u,v): the axes combined — plus the modulated MINIMUM radius 
                 and clearance lint must use (silhouette alone ignores flutes/waves) (pure)
 perforation.ts  patterns -> placements in (u,v) parameter space; hole-shape ids (pure, deterministic)
 perf-texture.ts placements -> drag-preview alpha map (pure polygon math + a CanvasTexture)
-params.ts       schema + dims() + printability/electrical lint
-lint.ts         composes params + fitter + overhang warnings into the one list the UI shows
+params.ts       flat schema + dims() + printability/electrical lint; layer/global key partition
+layers.ts       the layer model: nest resolution, assembly aggregation, cross-layer lint,
+                working-state persistence + v1 migration (pure)
+lint.ts         composes per-layer + fitter + overhang + cross-layer warnings into one list
 shade.ts        surface -> indexed mesh -> Manifold via fromMesh() -> batched perforation cut
-fitter.ts       fitter in Manifold (preview + STL) + fitterSpec() shared with the STEP builder
+fitter.ts       fitter in Manifold (preview + STL) + fitterSpec() shared with the STEP builder;
+                fitterSpecAssembly() adds one support ring per extra layer at the mount plane
 fitter-step.ts  the SAME spec in replicad/OCCT -> true analytic STEP (lazily imported)
-threemf.ts      minimal 3MF writer: mm-unit model XML in a hand-rolled stored zip (pure)
-lit.ts          CAD vs lamp vs overhang view modes + the section-cut clipping plane
-curve-editor.ts draggable silhouette canvas
-build-worker.ts the whole geometry pipeline off-thread; spawned twice (interactive + export)
+threemf.ts      minimal 3MF writer: multi-object, per-object name + displaycolor, stored zip (pure)
+lit.ts          CAD vs lamp vs overhang view modes, one physical material PER LAYER
+curve-editor.ts the silhouette editor: world-mm canvas with grid, bulb keep-out, layer ghosts,
+                frozen-scale drags, fine mode, ghost-point add, nudge keys, numeric inspector
+build-worker.ts the whole geometry pipeline off-thread; per-layer preview cache; spawned twice
 main.ts         wiring (browser only: the ?url wasm import lives here)
 ```
 
@@ -87,8 +100,11 @@ Dragging a control must not wait on a boolean that takes 130 ms at default setti
 1. **Everything builds in a worker** (`build-worker.ts`, `parametric-kit/worker`) with latest-wins
    scheduling — one build in flight, mid-drag requests dropped rather than queued. The main thread
    blocks for **0 ms** per input event, measured; it was 170 ms.
-2. **Draft while you drag.** Every change asks for `DRAFT` — no perforation cut, reduced
-   resolution — and a 180 ms settle timer then asks for the full `PREVIEW`. A draft is **0.8 ms**
+2. **Draft while you drag — active layer only.** Every change asks for `DRAFT` — no perforation
+   cut, reduced resolution, and just the layer being edited; the other shells keep their settled
+   meshes. The settled `PREVIEW` rebuilds every layer, but the worker caches each layer's build
+   keyed on its RESOLVED inputs (params + derived curve), so untouched layers cost a cache hit and
+   a multi-layer drag settles at single-shade cost. A draft is **0.8 ms**
    because with no cutters there is no boolean, and therefore no reason to enter the kernel at all:
    `buildShade()` returns the shell triangles directly as a `BufferGeometry`. Anything that becomes
    an STL still goes through Manifold and is still validated.
@@ -130,8 +146,9 @@ pnpm test       # geometry probes; use pnpm, never a global vp (it drags in a se
 pnpm run build  # tsc && vp build
 ```
 
-The dev build publishes `window.__app` (`params`, `curve`, `rebuild()`, `rebuildSync()`, `render()`,
-`dims()`, `viewer`, `lighting`). Don't screenshot the viewer directly — rAF pauses while the window
+The dev build publishes `window.__app` (`params`, `design`, `active`, `setActive()`,
+`addInnerLayer()`, `curve`, `shades()`, `rebuild()`, `rebuildSync()`, `render()`, `dims()` — the
+assembly — `viewer`, `lighting`, `curveEditor`). Don't screenshot the viewer directly — rAF pauses while the window
 is occluded, so a capture can be a stale frame. Instead: set params → `rebuildSync()` → `render()` →
 `canvas.toDataURL()`. Use `rebuildSync()`, not `rebuild()`: the normal path is a worker round trip,
 so it would photograph the previous mesh.

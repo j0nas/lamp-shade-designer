@@ -31,7 +31,7 @@ import {
   type Texture,
   Vector3,
 } from "three";
-import { BULBS, type Params } from "./params.ts";
+import { BULBS, type GlobalParams } from "./params.ts";
 
 export type ViewMode = "cad" | "lamp" | "overhang";
 
@@ -39,12 +39,19 @@ export type ViewMode = "cad" | "lamp" | "overhang";
 // heatmap view looks exactly like the familiar shade.
 export const SHADE_COLOR = 0xf3ece0;
 
+// What a layer looks like, as far as materials care: its colour, how see-through it previews, and
+// its wall (which drives the lit-mode glow — thin walls glow, thick ones read solid).
+export type LayerLook = { color: string; opacity: number; wall: number };
+
 export type Lighting = {
   setMode: (m: ViewMode) => void;
   setRoomBrightness: (x: number) => void;
-  update: (p: Params, shadeHeightMm: number, maxRmm: number) => void;
+  update: (g: GlobalParams, assemblyHeightMm: number, maxRmm: number) => void;
   setShowBulb: (on: boolean) => void;
-  shadeMaterial: MeshPhysicalMaterial;
+  // One physical material per layer, managed here so every view mode restyles all of them at
+  // once. The returned array is the SAME live array each call — main.ts indexes into it.
+  syncLayerMaterials: (looks: LayerLook[]) => MeshPhysicalMaterial[];
+  layerMaterials: MeshPhysicalMaterial[];
   fitterMaterial: MeshStandardMaterial;
   dispose: () => void;
 };
@@ -114,15 +121,21 @@ export function createLighting(scene: Scene): Lighting {
   wall.visible = false;
   scene.add(wall);
 
-  // Shade material: physical so thin walls can actually transmit light the way printed PLA does.
-  const shadeMaterial = new MeshPhysicalMaterial({
-    color: SHADE_COLOR,
-    roughness: 0.72,
-    metalness: 0,
-    transmission: 0,
-    thickness: 2,
-    side: 2, // DoubleSide: a perforated shell is seen from inside through its own holes
-  });
+  // Shade materials, one per layer: physical so thin walls can actually transmit light the way
+  // printed PLA does, and per-layer so a translucent outer skin can wrap a coloured inner
+  // diffuser — the whole point of stacking shells.
+  const layerMaterials: MeshPhysicalMaterial[] = [];
+  let looks: LayerLook[] = [];
+
+  const makeShadeMaterial = () =>
+    new MeshPhysicalMaterial({
+      color: SHADE_COLOR,
+      roughness: 0.72,
+      metalness: 0,
+      transmission: 0,
+      thickness: 2,
+      side: 2, // DoubleSide: a perforated shell is seen from inside through its own holes
+    });
 
   const fitterMaterial = new MeshStandardMaterial({
     color: 0x3d3a45,
@@ -133,9 +146,13 @@ export function createLighting(scene: Scene): Lighting {
   let mode: ViewMode = "cad";
   let brightness = 0.12;
   let showBulb = true;
-  let lastP: Params | null = null;
+  let lastG: GlobalParams | null = null;
   let lastH = 200;
   let lastR = 130;
+
+  // Scratch colours: apply() runs on every param change, so per-call allocation would churn.
+  const tintScratch = new Color();
+  const layerScratch = new Color();
 
   function apply(): void {
     const lamp = mode === "lamp";
@@ -153,35 +170,22 @@ export function createLighting(scene: Scene): Lighting {
     floor.visible = lamp;
     wall.visible = lamp;
 
-    if (lamp && lastP) {
-      const p = lastP;
-      const bulb = BULBS[p.bulbKind];
-      const z = p.bulbZ * lastH;
+    if (lamp && lastG) {
+      const g = lastG;
+      const bulb = BULBS[g.bulbKind];
+      const z = g.bulbZ * lastH;
 
       // CRITICAL: the scene is in MILLIMETRES and this light uses physical decay = 2, so illuminance
       // falls as intensity / d² with d in mm. A "realistic" 96 cd therefore lands at 96/400² ≈ 0.0006
       // on a wall 400 mm away — visually black. Scale by the square of the unit ratio so a typical
       // bulb-to-wall distance lands near 1.0: at 150 mm, watts·5600/150² ≈ 2 for an 8 W lamp.
       const MM_UNIT_GAIN = 5600;
-      bulbLight.intensity = p.watts * MM_UNIT_GAIN;
-      bulbLight.color = kelvinish(p.watts);
+      bulbLight.intensity = g.watts * MM_UNIT_GAIN;
+      bulbLight.color = kelvinish(g.watts);
       bulbLight.position.set(0, 0, z);
       bulbLight.distance = 0; // no cutoff; decay alone shapes the falloff
       bulbMesh.position.set(0, 0, z);
       bulbMesh.scale.setScalar(bulb.dia / 2);
-
-      // Thin walls glow; thick ones read as solid. Transmission alone does NOT produce the glow — it
-      // is refraction, showing what is behind the surface, not light escaping from within. The glow a
-      // real shade has comes from its inner surface being lit, so drive `emissive` from wall
-      // thinness and power, and keep transmission as a secondary see-through cue.
-      const w = p.vaseMode ? 0.42 : p.wall;
-      const thinness = Math.min(1, Math.max(0, 1 - (w - 0.4) / 2.8)); // 0.4 mm -> 1, 3.2 mm -> 0
-      shadeMaterial.transmission = 0.15 + thinness * 0.45;
-      shadeMaterial.thickness = w;
-      shadeMaterial.emissive = kelvinish(p.watts);
-      // Power raises the glow but saturates — doubling the wattage does not double how lit it reads.
-      shadeMaterial.emissiveIntensity =
-        (0.12 + thinness * 0.75) * Math.min(2.2, 0.45 + Math.sqrt(p.watts) / 3.4);
 
       const reach = Math.max(lastR * 6, lastH * 3);
       floor.scale.set(reach, reach, 1);
@@ -189,29 +193,67 @@ export function createLighting(scene: Scene): Lighting {
       wall.scale.set(reach, reach * 0.8, 1);
       wall.rotation.set(Math.PI / 2, 0, 0);
       wall.position.set(0, lastR * 2.6, (reach * 0.8) / 2 - 0.4);
-    } else {
-      shadeMaterial.transmission = 0;
-      shadeMaterial.thickness = 2;
-      shadeMaterial.emissiveIntensity = 0; // CAD mode reads form, not mood
     }
 
-    // Overhang heatmap: vertex colours multiply the base colour, so the base flips to white while
-    // the ramp is on and back to the shade's own colour when it isn't. CHANGE-GUARDED because
-    // apply() runs on every param change, and vertexColors/needsUpdate recompile the shader — an
-    // unconditional toggle would recompile the program on every frame of a drag. The depth and
-    // distance materials are untouched: shadows don't care what colour the surface is, and the
-    // drag preview's alpha map is an orthogonal shader feature that keeps working here.
+    // Per-layer material pass. Overhang heatmap: vertex colours multiply the base colour, so the
+    // base flips to white while the ramp is on and back to the layer's own colour when it isn't.
+    // The vertexColors flip is CHANGE-GUARDED because apply() runs on every param change, and
+    // vertexColors/needsUpdate recompile the shader — an unconditional toggle would recompile the
+    // program on every frame of a drag. The depth and distance materials are untouched: shadows
+    // don't care what colour the surface is, and the drag preview's alpha map is an orthogonal
+    // shader feature that keeps working here.
     const overhang = mode === "overhang";
-    if (shadeMaterial.vertexColors !== overhang) {
-      shadeMaterial.vertexColors = overhang;
-      shadeMaterial.color.set(overhang ? 0xffffff : SHADE_COLOR);
-      shadeMaterial.needsUpdate = true;
+    for (let i = 0; i < layerMaterials.length; i++) {
+      const mat = layerMaterials[i];
+      const look = looks[i] ?? { color: "#f3ece0", opacity: 1, wall: 2 };
+      const translucent = look.opacity < 0.999;
+      mat.transparent = translucent;
+      mat.opacity = look.opacity;
+      // depthWrite off for translucent shells so an outer skin blends over its inner layers
+      // instead of z-fighting its own far side.
+      mat.depthWrite = !translucent;
+
+      if (lamp && lastG) {
+        // Thin walls glow; thick ones read as solid. Transmission alone does NOT produce the glow —
+        // it is refraction, showing what is behind the surface, not light escaping from within. The
+        // glow a real shade has comes from its inner surface being lit, so drive `emissive` from
+        // wall thinness and power — TINTED BY THE LAYER'S COLOUR, which is what makes a coloured
+        // diffuser inside a translucent skin read the way the printed thing does.
+        const w = look.wall;
+        const thinness = Math.min(1, Math.max(0, 1 - (w - 0.4) / 2.8)); // 0.4 mm -> 1, 3.2 mm -> 0
+        mat.transmission = 0.15 + thinness * 0.45;
+        mat.thickness = w;
+        mat.emissive
+          .copy(tintScratch.copy(kelvinish(lastG.watts)))
+          .multiply(layerScratch.set(look.color));
+        // Power raises the glow but saturates — doubling the wattage does not double how lit it
+        // reads.
+        mat.emissiveIntensity =
+          (0.12 + thinness * 0.75) * Math.min(2.2, 0.45 + Math.sqrt(lastG.watts) / 3.4);
+      } else {
+        mat.transmission = 0;
+        mat.thickness = 2;
+        mat.emissiveIntensity = 0; // CAD mode reads form, not mood
+      }
+
+      if (mat.vertexColors !== overhang) {
+        mat.vertexColors = overhang;
+        mat.needsUpdate = true;
+      }
+      mat.color.set(overhang ? "#ffffff" : look.color);
     }
   }
 
   return {
-    shadeMaterial,
+    layerMaterials,
     fitterMaterial,
+    syncLayerMaterials(next) {
+      looks = next;
+      while (layerMaterials.length < next.length) layerMaterials.push(makeShadeMaterial());
+      while (layerMaterials.length > next.length) layerMaterials.pop()!.dispose();
+      apply();
+      return layerMaterials;
+    },
     setMode(m) {
       mode = m;
       apply();
@@ -224,9 +266,9 @@ export function createLighting(scene: Scene): Lighting {
       showBulb = on;
       apply();
     },
-    update(p, shadeHeightMm, maxRmm) {
-      lastP = p;
-      lastH = shadeHeightMm;
+    update(g, assemblyHeightMm, maxRmm) {
+      lastG = g;
+      lastH = assemblyHeightMm;
       lastR = maxRmm;
       apply();
     },
@@ -236,7 +278,7 @@ export function createLighting(scene: Scene): Lighting {
       (bulbMesh.material as MeshStandardMaterial).dispose();
       planeGeom.dispose();
       surfaceMat.dispose();
-      shadeMaterial.dispose();
+      for (const m of layerMaterials) m.dispose();
       fitterMaterial.dispose();
     },
   };

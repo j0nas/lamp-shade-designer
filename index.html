@@ -35,21 +35,69 @@
         <input id="design-file" type="file" accept=".json,application/json" hidden />
       </section>
 
+      <!-- Layers: the shade as a stack of printed shells. App chrome — the panel below edits
+           whichever layer is selected here. -->
+      <section class="group" id="layers-group">
+        <h2>Layers</h2>
+        <div id="layer-list"></div>
+        <div class="curve-tools">
+          <button type="button" id="layer-add" title="Add a nested inner layer">Add inner</button>
+          <button type="button" id="layer-duplicate">Duplicate</button>
+          <button type="button" id="layer-delete">Delete</button>
+        </div>
+        <div class="row">
+          <label for="layer-color">Colour</label>
+          <input id="layer-color" type="color" value="#f3ece0" />
+          <output id="layer-color-out">#f3ece0</output>
+        </div>
+        <div class="row">
+          <label for="layer-opacity">Opacity</label>
+          <input id="layer-opacity" type="range" min="0.15" max="1" step="0.05" value="1" />
+          <output id="layer-opacity-out">1.00</output>
+        </div>
+      </section>
+
       <!-- Silhouette editor: app-owned, not a schema param (a curve is control points, not a scalar). -->
       <section class="group" id="silhouette-group">
         <h2>Silhouette</h2>
-        <div class="sel">
+        <div class="sel" id="curve-link-row">
+          <label for="curve-link">Shape</label>
+          <select id="curve-link">
+            <option value="free">Drawn</option>
+            <option value="nest">Nested in outer</option>
+          </select>
+        </div>
+        <div class="row" id="nest-gap-row">
+          <label for="nest-gap">Air gap</label>
+          <input id="nest-gap" type="range" min="1" max="40" step="0.5" value="6" />
+          <output id="nest-gap-out">6 mm</output>
+        </div>
+        <div class="sel" id="family-row">
           <label for="family">Family</label>
           <select id="family"></select>
         </div>
-        <canvas id="curve" width="300" height="220" aria-label="Silhouette profile editor"></canvas>
+        <div id="curve-wrap">
+          <canvas id="curve" width="300" height="240" aria-label="Silhouette profile editor"></canvas>
+          <div id="curve-inspector">
+            <label class="pt-field"
+              >r
+              <span class="num"><input id="pt-r" type="number" step="0.1" disabled /><span class="unit">mm</span></span>
+            </label>
+            <label class="pt-field"
+              >z
+              <span class="num"><input id="pt-z" type="number" step="0.1" disabled /><span class="unit">mm</span></span>
+            </label>
+            <button type="button" id="curve-expand" title="Expand the editor">⤢</button>
+          </div>
+        </div>
         <div class="curve-tools">
           <button type="button" id="curve-smooth">Smooth</button>
           <button type="button" id="curve-mirror">Mirror</button>
           <button type="button" id="curve-reset">Reset</button>
         </div>
         <p class="sub">
-          Drag a point to reshape. Double-click the curve to add a point, a point to remove it.
+          Drag points — Shift for fine moves. Click the curve to add a point; Delete removes the
+          selected one; arrows nudge it (Shift = 0.1 mm). Ctrl/⌘ Z undoes.
         </p>
       </section>
 

@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { afterAll, beforeAll, expect, test } from "vite-plus/test";
 import { initCSG } from "parametric-kit/csg";
 import { bbox, signedVolume } from "parametric-kit/testkit";
-import { dims } from "./params.ts";
+import { dims, mergeParams } from "./params.ts";
 import { buildShade, EXPORT } from "./shade.ts";
 import { buildFitter } from "./fitter.ts";
 import { sanitizeDesign } from "./designs.ts";
@@ -41,14 +41,19 @@ function measure(name: string): Golden {
   // A null here means the ENVELOPE no longer parses — schema drift big enough to orphan the
   // whole catalog, which must fail loudly rather than quietly measuring defaults.
   expect(d).not.toBeNull();
-  const shade = buildShade(d!.params, d!.curve, EXPORT);
+  // The catalog files are v1 (flat params); the sanitizer migrates them to a single layer. The
+  // merged flat params MUST reproduce the pre-layer geometry bit-for-bit — that is exactly what
+  // the pinned numbers below enforce.
+  const flat = mergeParams(d!.globals, d!.layers[0].params);
+  const curve = d!.layers[0].curve;
+  const shade = buildShade(flat, curve, EXPORT);
   const b = bbox(shade);
   return {
     shadeVolume: signedVolume(shade),
     bbox: { min: [...b.min], max: [...b.max] },
     genus: genusOf(shade),
-    holeCount: dims(d!.params, d!.curve).holeCount,
-    fitterVolume: signedVolume(buildFitter(d!.params, d!.curve)),
+    holeCount: dims(flat, curve).holeCount,
+    fitterVolume: signedVolume(buildFitter(flat, curve)),
   };
 }
 

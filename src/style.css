@@ -295,6 +295,86 @@ input[type="checkbox"] {
   margin-top: 6px;
 }
 
+/* ---------- layers ---------- */
+
+#layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 8px;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-dim);
+}
+
+.layer-row:hover {
+  background: #ffffff0a;
+}
+
+.layer-row.active {
+  border-color: var(--accent-soft);
+  background: #ffffff0d;
+  color: var(--text);
+}
+
+.layer-swatch {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid #00000066;
+}
+
+.layer-row .layer-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-row .layer-tag {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.layer-eye {
+  flex: none;
+  width: 22px;
+  padding: 1px 0;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.layer-eye:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.layer-row.hidden-layer .layer-name {
+  opacity: 0.45;
+}
+
+input[type="color"] {
+  width: 100%;
+  height: 24px;
+  padding: 1px 2px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
 /* ---------- silhouette editor ---------- */
 
 #curve {
@@ -307,6 +387,72 @@ input[type="checkbox"] {
   border-radius: 6px;
   cursor: crosshair;
   touch-action: none;
+  outline: none; /* focus ring is the selected-point highlight, not a canvas box */
+  aspect-ratio: 5 / 4;
+}
+
+/* Expanded editor: the same canvas, docked as a large overlay beside the panel so precision work
+   gets real pixels while the 3D view stays visible. */
+#curve-wrap.expanded {
+  position: fixed;
+  left: 356px;
+  top: 12px;
+  bottom: 12px;
+  width: min(560px, calc(100vw - 380px));
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+}
+
+#curve-wrap.expanded #curve {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  margin: 0 0 8px;
+  aspect-ratio: auto;
+}
+
+#curve-inspector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+
+#curve-inspector .pt-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  color: var(--text-dim);
+}
+
+#curve-inspector .num {
+  flex: 1;
+}
+
+#curve-inspector input[type="number"] {
+  appearance: textfield;
+}
+
+#curve-inspector input[type="number"]::-webkit-outer-spin-button,
+#curve-inspector input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+#curve-expand {
+  flex: none;
+  width: 26px;
+  padding: 3px 0;
+  background: #ffffff0f;
+  border-color: var(--panel-edge);
+  font-weight: 450;
 }
 
 .curve-tools {
@@ -402,5 +548,11 @@ button.muted:hover:not(:disabled),
   #panel {
     width: calc(100vw - 24px);
     max-height: calc(100% - 24px);
+  }
+
+  #curve-wrap.expanded {
+    left: 12px;
+    right: 12px;
+    width: auto;
   }
 }

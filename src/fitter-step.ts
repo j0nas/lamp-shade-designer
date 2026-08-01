@@ -10,7 +10,7 @@
 // Manifold's annuli are 64-gons (~0.16% small on area). That is the whole point of having this path.
 
 import type { Shape3D } from "replicad";
-import type { FitterSpec } from "./fitter.ts";
+import { type FitterSpec, RIDGE_H, RIDGE_W } from "./fitter.ts";
 
 type Replicad = typeof import("replicad");
 
@@ -58,7 +58,29 @@ function platePlan(r: Replicad, f: FitterSpec, hubInnerR: number) {
 // instead of scattering casts through the switch.
 const solid = (s: unknown): Shape3D => s as Shape3D;
 
+// Same dimensions as the Manifold builder's support ridges — one raised locating ring per inner
+// layer of a stack, standing on the plate's top face.
+function withSupportRings(r: Replicad, f: FitterSpec, body: Shape3D): Shape3D {
+  const { drawCircle } = r;
+  let out = body;
+  for (const ring of f.supportRings) {
+    out = out.fuse(
+      solid(
+        drawCircle(ring)
+          .cut(drawCircle(ring - RIDGE_W))
+          .sketchOnPlane("XY", f.thickness)
+          .extrude(RIDGE_H),
+      ),
+    );
+  }
+  return out;
+}
+
 export function buildFitterShape(r: Replicad, f: FitterSpec): Shape3D {
+  return withSupportRings(r, f, fitterBody(r, f));
+}
+
+function fitterBody(r: Replicad, f: FitterSpec): Shape3D {
   const { drawCircle } = r;
   const t = f.thickness;
 

@@ -8,22 +8,31 @@
 // old app version degrades field-by-field instead of being rejected or trusted.
 
 import { sanitize, type StorageLike } from "parametric-kit/params";
-import { type CtrlPt, sanitizeCurve } from "./curve.ts";
-import { migrateStored, type Params, schema } from "./params.ts";
+import { sanitizeCurve } from "./curve.ts";
+import { migrateStored, schema, splitParams } from "./params.ts";
+import {
+  type Design,
+  defaultLayer,
+  type Layer,
+  sanitizeDesignBody,
+} from "./layers.ts";
 
 // Injected by vite's `define` in dev and build; absent in plain Node, which the typeof guard covers.
 export const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
 
 const MAX_NAME = 80;
 
+// Version 2: a design is a layered assembly — shared globals (light + fitter) plus one or more
+// layers, each a full shell definition. Version 1 files (flat params + one curve) still open: they
+// become a single free layer, byte-for-byte the same geometry.
 export type DesignFile = {
   format: "lamp-shade-design";
-  version: 1;
+  version: 2;
   app: string; // APP_VERSION at save time — informational provenance, never load logic
   name: string;
   savedAt: string; // ISO 8601
-  params: Params;
-  curve: CtrlPt[];
+  globals: Design["globals"];
+  layers: Layer[];
 };
 
 function cleanName(raw: unknown): string {
@@ -31,44 +40,59 @@ function cleanName(raw: unknown): string {
   return s || "untitled";
 }
 
+const copyLayer = (l: Layer): Layer => ({
+  ...l,
+  params: { ...l.params },
+  curve: l.curve.map((p) => ({ ...p })),
+});
+
 export function makeDesign(
   name: string,
-  params: Params,
-  curve: readonly CtrlPt[],
+  design: Design,
   opts: { now?: Date; app?: string } = {},
 ): DesignFile {
   return {
     format: "lamp-shade-design",
-    version: 1,
+    version: 2,
     app: opts.app ?? APP_VERSION,
     name: cleanName(name),
     savedAt: (opts.now ?? new Date()).toISOString(),
-    params: { ...params },
-    curve: curve.map((p) => ({ ...p })),
+    globals: { ...design.globals },
+    layers: design.layers.map(copyLayer),
   };
+}
+
+// A v1 file's flat params split into globals + a single free layer. migrateStored runs first for
+// the same reason the boot path does it: sanitize would silently pin an old "slots" design back to
+// the default pattern.
+function designBodyV1(r: Record<string, unknown>): Design {
+  const flat = sanitize(schema, migrateStored(r.params) ?? r.params);
+  const layer = defaultLayer();
+  layer.params = splitParams(flat).layer;
+  layer.curve = sanitizeCurve(r.curve);
+  return { globals: splitParams(flat).globals, layers: [layer] };
 }
 
 // THE import path — files, share links and library entries all come through here. Only a wrong
 // envelope (not our format, or a future major version) returns null; malformed FIELDS degrade
 // instead, per the kit sanitize contract, so a hand-edited or half-corrupted file still opens as
-// something rather than nothing. Params run through migrateStored first for the same reason the
-// boot path does: sanitize would silently pin an old "slots" design back to the default pattern.
+// something rather than nothing.
 export function sanitizeDesign(raw: unknown): DesignFile | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
-  if (r.format !== "lamp-shade-design" || r.version !== 1) return null;
-  const migrated = migrateStored(r.params);
+  if (r.format !== "lamp-shade-design" || (r.version !== 1 && r.version !== 2)) return null;
+  const body = r.version === 1 ? designBodyV1(r) : sanitizeDesignBody(r);
   return {
     format: "lamp-shade-design",
-    version: 1,
+    version: 2,
     app: typeof r.app === "string" ? r.app.slice(0, MAX_NAME) : "unknown",
     name: cleanName(r.name),
     savedAt:
       typeof r.savedAt === "string" && !Number.isNaN(Date.parse(r.savedAt))
         ? r.savedAt
         : new Date(0).toISOString(),
-    params: sanitize(schema, migrated ?? r.params),
-    curve: sanitizeCurve(r.curve),
+    globals: body.globals,
+    layers: body.layers,
   };
 }
 
