@@ -97,26 +97,25 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
     return Math.max(40, Math.ceil((peak * 1.12) / 20) * 20);
   };
 
+  // ONE px/mm for both axes — the silhouette draws in true proportion whatever shape the canvas
+  // is (compact panel or expanded overlay). The scale is whichever axis binds; the slack axis
+  // centres its content instead of stretching to fill.
   const geom = (ctx: EditorContext) => {
     const w = canvas.clientWidth || 300;
     const h = canvas.clientHeight || 220;
-    return {
-      w,
-      h,
-      cx: w / 2,
-      top: PAD,
-      bot: h - PAD,
-      max: scaleR(ctx),
-      span: Math.max(1, ctx.spanMm),
-    };
+    const max = scaleR(ctx);
+    const span = Math.max(1, ctx.spanMm);
+    const s = Math.min((h - 2 * PAD) / span, (w / 2 - PAD) / max);
+    const bot = (h + span * s) / 2;
+    return { w, h, cx: w / 2, top: bot - span * s, bot, max, span, s };
   };
 
   type Geom = ReturnType<typeof geom>;
 
-  const xOf = (g: Geom, rMm: number) => g.cx + (rMm / g.max) * (g.w / 2 - PAD);
-  const yOf = (g: Geom, zMm: number) => g.bot - (zMm / g.span) * (g.bot - g.top);
-  const rAt = (g: Geom, x: number) => (Math.abs(x - g.cx) / (g.w / 2 - PAD)) * g.max;
-  const zAt = (g: Geom, y: number) => ((g.bot - y) / (g.bot - g.top)) * g.span;
+  const xOf = (g: Geom, rMm: number) => g.cx + rMm * g.s;
+  const yOf = (g: Geom, zMm: number) => g.bot - zMm * g.s;
+  const rAt = (g: Geom, x: number) => Math.abs(x - g.cx) / g.s;
+  const zAt = (g: Geom, y: number) => (g.bot - y) / g.s;
 
   const worldOf = (ctx: EditorContext, p: CtrlPt): { r: number; z: number } => ({
     r: p.r * ctx.girth,
@@ -261,22 +260,22 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
     const dim = style.getPropertyValue("--text-dim").trim() || "#a49db4";
 
     // --- mm grid ---------------------------------------------------------------------------
-    const pxPerMmX = (g.w / 2 - PAD) / g.max;
-    const pxPerMmY = (g.bot - g.top) / g.span;
-    const stepX = gridStep(pxPerMmX);
-    const stepY = gridStep(pxPerMmY);
+    // One step for both axes — the scale is uniform, so the grid is genuinely square.
+    const step = gridStep(g.s);
+    const gridX0 = g.cx - g.max * g.s;
+    const gridX1 = g.cx + g.max * g.s;
     c2d.strokeStyle = "#ffffff0d";
     c2d.lineWidth = 1;
     c2d.beginPath();
-    for (let r = stepX; r <= g.max; r += stepX) {
+    for (let r = step; r <= g.max; r += step) {
       for (const x of [xOf(g, r), g.cx - (xOf(g, r) - g.cx)]) {
         c2d.moveTo(x, g.top);
         c2d.lineTo(x, g.bot);
       }
     }
-    for (let z = 0; z <= g.span; z += stepY) {
-      c2d.moveTo(PAD, yOf(g, z));
-      c2d.lineTo(g.w - PAD, yOf(g, z));
+    for (let z = 0; z <= g.span; z += step) {
+      c2d.moveTo(gridX0, yOf(g, z));
+      c2d.lineTo(gridX1, yOf(g, z));
     }
     c2d.stroke();
 
@@ -363,7 +362,7 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
         const yTop = yOf(g, b.zMm + b.lenMm / 2 - cap);
         const yBot = yOf(g, b.zMm - b.lenMm / 2 + cap);
         const rx = xOf(g, r) - g.cx;
-        const ry = cap * pxPerMmY;
+        const ry = cap * g.s; // uniform scale: end caps are true circles
         c2d.beginPath();
         c2d.ellipse(g.cx, yTop, rx, ry, 0, Math.PI, 0); // top arc, left → right
         c2d.lineTo(g.cx + rx, yBot);
@@ -472,7 +471,7 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
     c2d.textAlign = "right";
     c2d.fillText(`⌀${(peak * 2).toFixed(0)} mm`, g.w - 4, g.h - 4);
     c2d.textAlign = "left";
-    c2d.fillText(`grid ${stepX} mm`, PAD, g.h - 4);
+    c2d.fillText(`grid ${step} mm`, PAD, g.h - 4);
 
     updateLegend(ctx);
   }
@@ -542,7 +541,7 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
       // Fine mode: the point follows a quarter of the cursor's movement, relative — precision
       // without a magnifier.
       dragWorld = {
-        r: dragWorld.r + ((Math.abs(x - g.cx) - Math.abs(lastCursor.x - g.cx)) / (g.w / 2 - PAD)) * g.max * 0.25,
+        r: dragWorld.r + ((Math.abs(x - g.cx) - Math.abs(lastCursor.x - g.cx)) / g.s) * 0.25,
         z: dragWorld.z + (zAt(g, y) - zAt(g, lastCursor.y)) * 0.25,
       };
     } else {
