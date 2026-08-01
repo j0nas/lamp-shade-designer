@@ -34,10 +34,7 @@ function layer(over: Partial<Params> = {}, extra: Partial<Layer> = {}): Layer {
 function twoLayer(gap = 6, innerOver: Partial<Params> = {}): Design {
   return {
     globals: splitParams(params()).globals,
-    layers: [
-      layer({ wall: 2 }),
-      layer({ girth: 1, ...innerOver }, { link: "nest", gap }),
-    ],
+    layers: [layer({ wall: 2 }), layer({ girth: 1, ...innerOver }, { link: "nest", gap })],
   };
 }
 

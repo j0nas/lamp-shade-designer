@@ -72,7 +72,9 @@ describe("design files", () => {
       name: 42,
       savedAt: "not a date",
       globals: { watts: "many" },
-      layers: [{ color: "not-a-colour", opacity: "solid", params: { height: "tall" }, curve: "nope" }],
+      layers: [
+        { color: "not-a-colour", opacity: "solid", params: { height: "tall" }, curve: "nope" },
+      ],
     });
     expect(d).not.toBeNull();
     expect(d?.name).toBe("untitled");

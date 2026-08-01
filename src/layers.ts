@@ -378,10 +378,12 @@ export function sanitizeWorking(raw: unknown): WorkingState {
 
 // Storage is injectable (kit StorageLike shape) purely so the save→load round trip is testable in
 // Node; the app always passes nothing and gets localStorage.
-type Storageish = {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-} | undefined;
+type Storageish =
+  | {
+      getItem(key: string): string | null;
+      setItem(key: string, value: string): void;
+    }
+  | undefined;
 
 export function loadWorking(storage: Storageish = globalThis.localStorage): WorkingState {
   try {

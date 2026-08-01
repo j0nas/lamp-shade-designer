@@ -10,12 +10,7 @@
 import { sanitize, type StorageLike } from "parametric-kit/params";
 import { sanitizeCurve } from "./curve.ts";
 import { migrateStored, schema, splitParams } from "./params.ts";
-import {
-  type Design,
-  defaultLayer,
-  type Layer,
-  sanitizeDesignBody,
-} from "./layers.ts";
+import { type Design, defaultLayer, type Layer, sanitizeDesignBody } from "./layers.ts";
 
 // Injected by vite's `define` in dev and build; absent in plain Node, which the typeof guard covers.
 export const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";

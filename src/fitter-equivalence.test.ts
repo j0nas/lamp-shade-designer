@@ -9,7 +9,13 @@ import { defaults } from "parametric-kit/params";
 import { bbox, volume } from "parametric-kit/testkit";
 import { familyCurve } from "./curve.ts";
 import { type Params, schema } from "./params.ts";
-import { buildFitter, buildFitterFromSpec, type FitterKind, fitterSpec, RIDGE_H } from "./fitter.ts";
+import {
+  buildFitter,
+  buildFitterFromSpec,
+  type FitterKind,
+  fitterSpec,
+  RIDGE_H,
+} from "./fitter.ts";
 import { buildFitterShape, initSTEP } from "./fitter-step.ts";
 
 const curve = familyCurve("empire");

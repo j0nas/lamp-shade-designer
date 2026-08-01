@@ -77,17 +77,30 @@
           <select id="family"></select>
         </div>
         <div id="curve-wrap">
-          <canvas id="curve" width="300" height="240" aria-label="Silhouette profile editor"></canvas>
+          <canvas
+            id="curve"
+            width="300"
+            height="240"
+            aria-label="Silhouette profile editor"
+          ></canvas>
           <!-- Filled by the editor with the markings currently drawn; CSS shows it when expanded. -->
           <div id="curve-legend"></div>
           <div id="curve-inspector">
             <label class="pt-field"
               >r
-              <span class="num"><input id="pt-r" type="number" step="0.1" disabled /><span class="unit">mm</span></span>
+              <span class="num"
+                ><input id="pt-r" type="number" step="0.1" disabled /><span class="unit"
+                  >mm</span
+                ></span
+              >
             </label>
             <label class="pt-field"
               >z
-              <span class="num"><input id="pt-z" type="number" step="0.1" disabled /><span class="unit">mm</span></span>
+              <span class="num"
+                ><input id="pt-z" type="number" step="0.1" disabled /><span class="unit"
+                  >mm</span
+                ></span
+              >
             </label>
             <button type="button" id="curve-expand" title="Expand the editor">⤢</button>
           </div>
