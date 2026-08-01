@@ -417,6 +417,70 @@ input[type="color"] {
   aspect-ratio: auto;
 }
 
+/* Legend for the editor's markings — filled by the editor with only what is currently drawn.
+   Compact mode stays clean; the expanded overlay has the room (and the marking density) for it.
+   Swatch colours deliberately echo the canvas strokes, a touch more opaque so they stay legible. */
+#curve-legend {
+  display: none;
+}
+
+#curve-wrap.expanded #curve-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-swatch {
+  flex: none;
+  width: 16px;
+}
+
+.legend-band-warn,
+.legend-band-bad {
+  height: 9px;
+  border-radius: 2px;
+}
+
+.legend-band-warn {
+  background: rgba(224, 163, 58, 0.35);
+}
+
+.legend-band-bad {
+  background: rgba(224, 90, 90, 0.4);
+}
+
+.legend-line-bulb,
+.legend-line-clear,
+.legend-line-mount,
+.legend-line-layer {
+  height: 0;
+}
+
+.legend-line-bulb {
+  border-top: 1.5px dashed #ffd9a0aa;
+}
+
+.legend-line-clear {
+  border-top: 1.5px dotted rgba(224, 163, 58, 0.85);
+}
+
+.legend-line-mount {
+  border-top: 1.5px dashed #ffffff66;
+}
+
+.legend-line-layer {
+  border-top: 1.5px solid; /* colour set inline to the layer's own colour */
+}
+
 #curve-inspector {
   display: flex;
   align-items: center;

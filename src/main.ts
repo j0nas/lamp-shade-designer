@@ -398,17 +398,16 @@ function editorContext(): EditorContext {
   const l = a.layers[active];
   const bulb = BULBS[design.globals.bulbKind];
   const n = design.layers.length;
-  const ghosts = a.layers
-    .filter((_, i) => i !== active && design.layers[i].visible)
-    .map((rl) => {
-      const span = rl.z1 - rl.z0;
-      const pts: [number, number][] = [];
-      for (let k = 0; k <= 48; k++) {
-        const v = k / 48;
-        pts.push([sampleRadius(rl.curve, v) * rl.params.girth, rl.z0 + v * span]);
-      }
-      return { pts, color: rl.layer.color };
-    });
+  const ghosts = a.layers.flatMap((rl, i) => {
+    if (i === active || !design.layers[i].visible) return [];
+    const span = rl.z1 - rl.z0;
+    const pts: [number, number][] = [];
+    for (let k = 0; k <= 48; k++) {
+      const v = k / 48;
+      pts.push([sampleRadius(rl.curve, v) * rl.params.girth, rl.z0 + v * span]);
+    }
+    return [{ pts, color: rl.layer.color, label: `${layerName(i, n)} layer` }];
+  });
   return {
     spanMm: a.height,
     girth: l.params.girth,
@@ -446,6 +445,7 @@ const curveEditor = installCurveEditor($<HTMLCanvasElement>("curve"), {
   context: editorContext,
   beginEdit: pushUndo,
   onSelect: syncInspector,
+  legend: $("curve-legend"),
 });
 
 // Numeric inspector: exact values for the selected point, in world millimetres.

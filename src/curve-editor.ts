@@ -18,10 +18,10 @@
 //   pointermove.
 
 import { addPointAt, type CtrlPt, MIN_R, removePoint, sampleRadius, setPoint } from "./curve.ts";
-import type { OverhangBand } from "./overhang.ts";
+import { OVERHANG_BAD_DEG, type OverhangBand, OVERHANG_WARN_DEG } from "./overhang.ts";
 
 // A non-active layer's resolved outline, for context: [radius mm, world z mm] samples, bottom→top.
-export type EditorGhost = { pts: [number, number][]; color: string };
+export type EditorGhost = { pts: [number, number][]; color: string; label: string };
 
 export type EditorContext = {
   spanMm: number; // vertical extent of the plot — the assembled lamp's height
@@ -50,6 +50,9 @@ export type CurveEditorOpts = {
   beginEdit?: () => void;
   // Selection changed or the selected point moved — the numeric inspector resyncs on this.
   onSelect?: () => void;
+  // Container the editor fills with a legend of the markings CURRENTLY drawn — owned by the
+  // editor so the explanation can never drift from the drawing. CSS shows it in expanded mode.
+  legend?: HTMLElement;
 };
 
 export type CurveSelection = { index: number; rMm: number; zMm: number; interior: boolean };
@@ -190,6 +193,49 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
       if (step * pxPerMm >= 26) return step;
     }
     return 200;
+  };
+
+  // Legend of what draw() just painted — entries appear and disappear WITH their markings (an
+  // overhang stripe you can't produce shouldn't be explained). Rebuilt only when the entry list
+  // actually changes; draw() runs per pointermove and DOM churn there would cost real frames.
+  let legendKey = "";
+  const updateLegend = (ctx: EditorContext): void => {
+    const el = opts.legend;
+    if (!el) return;
+    const entries: { swatch: string; color?: string; text: string }[] = [];
+    const levels = new Set(ctx.bands.map((b) => b.level));
+    if (levels.has("warn")) {
+      entries.push({
+        swatch: "band-warn",
+        text: `${OVERHANG_WARN_DEG}–${OVERHANG_BAD_DEG}° overhang — wants cooling`,
+      });
+    }
+    if (levels.has("bad")) {
+      entries.push({
+        swatch: "band-bad",
+        text: `>${OVERHANG_BAD_DEG}° overhang — sags / needs supports`,
+      });
+    }
+    if (ctx.bulb) {
+      entries.push({ swatch: "line-bulb", text: "bulb glass" });
+      entries.push({ swatch: "line-clear", text: "bulb keep-out (glass + air gap)" });
+    }
+    entries.push({ swatch: "line-mount", text: "mount plane (fitter seat)" });
+    for (const g of ctx.ghosts) entries.push({ swatch: "line-layer", color: g.color, text: g.label });
+
+    const key = JSON.stringify(entries);
+    if (key === legendKey) return;
+    legendKey = key;
+    el.innerHTML = "";
+    for (const e of entries) {
+      const item = document.createElement("span");
+      item.className = "legend-item";
+      const sw = document.createElement("span");
+      sw.className = `legend-swatch legend-${e.swatch}`;
+      if (e.color) sw.style.borderTopColor = e.color;
+      item.append(sw, e.text);
+      el.append(item);
+    }
   };
 
   function draw(): void {
@@ -427,6 +473,8 @@ export function installCurveEditor(canvas: HTMLCanvasElement, opts: CurveEditorO
     c2d.fillText(`⌀${(peak * 2).toFixed(0)} mm`, g.w - 4, g.h - 4);
     c2d.textAlign = "left";
     c2d.fillText(`grid ${stepX} mm`, PAD, g.h - 4);
+
+    updateLegend(ctx);
   }
 
   // Apply the current dragWorld target to the dragged point, quantised to 0.1 mm.
