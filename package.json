@@ -17,19 +17,19 @@
     "parametric-kit": "link:../parametric-kit",
     "replicad": "^0.23.1",
     "replicad-opencascadejs": "^0.23.0",
-    "three": "^0.184.0"
+    "three": "^0.186.1"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
-    "@types/three": "^0.184.1",
-    "typescript": "~6.0.2",
+    "@types/node": "^26.6.3",
+    "@types/three": "^0.186.0",
+    "typescript": "~7.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
-      "version": "11.18.0",
+      "version": "12.6.0",
       "onFail": "download"
     }
   }
