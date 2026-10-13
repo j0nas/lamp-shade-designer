@@ -179,8 +179,8 @@ importers:
         specifier: 3.5.1
         version: 3.5.1(@gltf-transform/core@4.4.2)(@gltf-transform/extensions@4.4.2)(@gltf-transform/functions@4.4.2)(esbuild-wasm@0.27.7)
       parametric-kit:
-        specifier: link:../parametric-kit
-        version: link:../parametric-kit
+        specifier: link:./vendor/parametric-kit
+        version: link:vendor/parametric-kit
       replicad:
         specifier: ^0.23.1
         version: 0.23.1

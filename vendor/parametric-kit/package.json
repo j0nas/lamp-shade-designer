@@ -1,0 +1,23 @@
+{
+  "name": "parametric-kit",
+  "version": "0.0.0",
+  "description": "Frozen copy of parametric-kit for lamp-shade-designer. See README.md.",
+  "private": true,
+  "license": "MIT",
+  "author": "Jonas Jensen",
+  "type": "module",
+  "exports": {
+    "./csg": "./src/csg/index.ts",
+    "./export": "./src/export/index.ts",
+    "./params": "./src/params/index.ts",
+    "./readout": "./src/readout/index.ts",
+    "./testkit": "./src/testkit/index.ts",
+    "./viewer": "./src/viewer/index.ts",
+    "./worker": "./src/worker/index.ts",
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "manifold-3d": "^3.5.1",
+    "three": ">=0.180.0"
+  }
+}

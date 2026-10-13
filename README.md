@@ -1,8 +1,9 @@
 # lamp-shade-designer
 
-A browser parametric designer for 3D-printable lamp shades, built on
-[parametric-kit](../parametric-kit). Design by dragging the silhouette and watching what the shade
-throws on a wall, then export STL for the shade and true B-rep **STEP** for the fitter.
+A browser parametric designer for 3D-printable lamp shades, built on a frozen copy of
+parametric-kit ([`vendor/parametric-kit`](vendor/parametric-kit)). Design by dragging the
+silhouette and watching what the shade throws on a wall, then export STL for the shade and true
+B-rep **STEP** for the fitter.
 
 A design is a **stack of layers** — up to six nested shells, each a full shade definition (own
 silhouette, section, modulation, perforation, wall, colour, translucency) around one shared light
@@ -153,8 +154,12 @@ is occluded, so a capture can be a stale frame. Instead: set params → `rebuild
 `canvas.toDataURL()`. Use `rebuildSync()`, not `rebuild()`: the normal path is a worker round trip,
 so it would photograph the previous mesh.
 
-`resolve.dedupe: ["three"]` is required: the kit is a `link:` dependency with its own
-`node_modules`, so `three` otherwise resolves twice and every `instanceof` across the boundary breaks.
+parametric-kit is vendored: `package.json` links `vendor/parametric-kit`, whose `exports` point at
+its `src` files, so there is no kit build step and `three` and `manifold-3d` resolve from this
+app's own `node_modules`. The copy is frozen (its README has the source commit) and belongs to this
+repo, so edit it here. `vendor/` is excluded from the formatter and linter so the files stay as
+copied. `resolve.dedupe: ["three"]` stays in `vite.config.ts` as a guard against a second `three`,
+which would break every `instanceof` across the boundary.
 
 ## Not done yet
 

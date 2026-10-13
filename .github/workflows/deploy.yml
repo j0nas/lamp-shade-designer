@@ -5,26 +5,13 @@ name: Deploy to GitHub Pages
 # deploy by proxying /apps/lamp-shade/* to the Pages URL, so pushing here is what
 # ships the change to the desktop — nothing is re-vendored by hand.
 #
-# The app also rebuilds when the kit changes: the parametric-kit repo dispatches a
-# `kit-updated` event on every push to its main, which fires this workflow via the
-# repository_dispatch trigger below. Because we build the kit from source in CI (see
-# the sibling checkout below), that re-run picks up the new kit code — no bump here.
-#
-# The app depends on the sibling parametric-kit via a `link:../parametric-kit`
-# path, and imports the kit's built dist/ (which is gitignored, so it must be
-# rebuilt in CI). actions/checkout can only write inside $GITHUB_WORKSPACE, so we
-# can't recreate the local `../parametric-kit` sibling above the workspace.
-# Instead we check out BOTH repos into subdirectories (app/ and parametric-kit/):
-# from app/, `../parametric-kit` then resolves to the sibling checkout, exactly
-# like the local layout. We build the kit first so its dist/ exists before the
-# app installs (link:) and builds against it.
+# The app is self-contained: parametric-kit lives in vendor/parametric-kit (a frozen copy,
+# see its README) and is linked from there, so one checkout is all CI needs.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-  repository_dispatch:
-    types: [kit-updated]
 
 # Least privilege for the Pages deployment.
 permissions:
@@ -42,50 +29,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          path: app
-      - uses: actions/checkout@v7
-        with:
-          repository: j0nas/parametric-kit
-          path: parametric-kit
       - uses: pnpm/action-setup@v6
         with:
-          # No root package.json here (two sibling checkouts), and this repo declares
-          # pnpm under devEngines rather than the `packageManager` field action-setup
-          # reads — so pin the version explicitly.
+          # This repo declares pnpm under devEngines rather than the `packageManager`
+          # field action-setup reads, so pin the version explicitly.
           version: 12.6.0
       - uses: actions/setup-node@v7
         with:
-          node-version-file: app/.node-version
+          node-version-file: .node-version
           cache: pnpm
-          cache-dependency-path: |
-            app/pnpm-lock.yaml
-            parametric-kit/pnpm-lock.yaml
-      # Build the kit first: the app's link: dep imports its dist/, which is
-      # gitignored and must be produced here.
-      - name: Build parametric-kit
-        working-directory: parametric-kit
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
-      - name: Install app
-        working-directory: app
+      - name: Install
         run: pnpm install --frozen-lockfile
       # Tests gate the deploy: the geometry probes (genus == holes + 1, positive
       # orientation) and the dual-kernel fitter equivalence check are exactly what
       # must not ship broken.
-      - name: Test app
-        working-directory: app
+      - name: Test
         # The `test` script is already `vp test --run`; don't append another
         # --run (vitest rejects the duplicated single-value option).
         run: pnpm test
-      - name: Build app
-        working-directory: app
+      - name: Build
         run: pnpm run build
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: app/dist
+          path: dist
 
   deploy:
     needs: build

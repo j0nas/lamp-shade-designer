@@ -25,12 +25,16 @@ export default defineConfig({
   // Relative base so the built bundle works from any path — standalone at "/" and embedded under a
   // subdirectory on jonas-jensen.com. The dev server ignores a relative base and still serves at "/".
   base: "./",
-  // parametric-kit is linked from a sibling checkout and has its own node_modules, so `three`
+  // parametric-kit used to be linked from a sibling checkout with its own node_modules, so `three`
   // resolved twice — "Multiple instances of Three.js being imported". Two copies break every
-  // instanceof across the boundary (and doubles the bundle), so force one.
+  // instanceof across the boundary (and doubles the bundle). The vendored copy in
+  // vendor/parametric-kit resolves from this app's node_modules, so there is one `three` now;
+  // the dedupe stays as a guard in case a link or a nested install ever brings back a second.
   resolve: { dedupe: ["three"] },
-  fmt: {},
+  // vendor/ is the frozen kit exactly as copied, formatted by the repo it came from.
+  fmt: { ignorePatterns: ["vendor/**"] },
   lint: {
+    ignorePatterns: ["vendor/**"],
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
     rules: { "vite-plus/prefer-vite-plus-imports": "error" },
     options: { typeAware: true, typeCheck: true },

@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "manifold-3d": "3.5.1",
-    "parametric-kit": "link:../parametric-kit",
+    "parametric-kit": "link:./vendor/parametric-kit",
     "replicad": "^0.23.1",
     "replicad-opencascadejs": "^0.23.0",
     "three": "^0.186.1"
