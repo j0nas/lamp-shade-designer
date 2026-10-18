@@ -1,5 +1,11 @@
 # lamp-shade-designer
 
+> **Moved.** The lamp shade is a product of Formeriet now: `packages/product-lamp-shade` in
+> [j0nas/formeriet](https://github.com/j0nas/formeriet), sold in formeriet.no's lamp store. This
+> repo is retired and kept for its history; nothing deploys from it, and jona.no no longer embeds
+> it. The shop's shade is one PETG shell with its mount printed in; the layer stack, the STEP
+> fitter and the 3MF export stayed here (formeriet's LAMPS.md says why).
+
 A browser parametric designer for 3D-printable lamp shades, built on a frozen copy of
 parametric-kit ([`vendor/parametric-kit`](vendor/parametric-kit)). Design by dragging the
 silhouette and watching what the shade throws on a wall, then export STL for the shade and true
