@@ -189,6 +189,29 @@ describe("working-state sanitizing", () => {
     const ws = sanitizeWorking({ ...d, active: 99 });
     expect(ws.active).toBe(ws.design.layers.length - 1);
   });
+
+  test("numbers outside the sliders are clamped, counts stay whole", () => {
+    // Regression: a share link asking for 4000 × 4000 holes passed the type check, was saved,
+    // and hung the tab on every reload.
+    const d = defaultDesign();
+    const raw = {
+      ...d,
+      globals: { ...d.globals, fitterSpokes: 1e6 },
+      layers: [
+        {
+          ...d.layers[0],
+          params: { ...d.layers[0].params, perfRows: 4000, perfCols: 12.6, wall: -3, girth: 50 },
+        },
+      ],
+    };
+    const ws = sanitizeWorking(raw);
+    const p = ws.design.layers[0].params;
+    expect(p.perfRows).toBe(schema.perfRows.max);
+    expect(p.perfCols).toBe(13);
+    expect(p.wall).toBe(schema.wall.min);
+    expect(p.girth).toBe(schema.girth.max);
+    expect(ws.design.globals.fitterSpokes).toBe(schema.fitterSpokes.max);
+  });
 });
 
 describe("layer naming", () => {

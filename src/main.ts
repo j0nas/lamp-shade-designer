@@ -95,7 +95,8 @@ let sharedName: string | null = null;
     design.layers = shared.layers.map((l) => structuredClone(l));
     active = 0;
     if (shared.name !== "untitled") sharedName = shared.name;
-    saveWorking({ design, active });
+    // Saved only once the first build below has finished, so a link that hangs the tab can't
+    // become the working copy every later visit opens.
     history.replaceState(null, "", location.pathname + location.search);
   }
 }
@@ -997,6 +998,7 @@ syncMeshes();
   lighting.update(design.globals, a.height, a.outerDia / 2);
   readout();
 }
+persist();
 syncLayerChrome();
 syncFamily();
 curveEditor.draw();

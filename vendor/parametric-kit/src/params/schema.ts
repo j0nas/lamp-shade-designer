@@ -106,6 +106,14 @@ export function sanitize<S extends Schema>(schema: S, raw: unknown): Infer<S> {
     if (field.kind === "pick" && !field.options.includes(out[key] as string)) {
       out[key] = field.def;
     }
+    // A share link or a hand-edited file can ask for any number: 4000 × 4000 holes passed the
+    // typeof check and hung the tab on every reload after. Clamp to the slider's own range, and
+    // keep whole-step fields (counts) whole.
+    if (field.kind === "num") {
+      const v = out[key] as number;
+      const clamped = Number.isFinite(v) ? Math.min(field.max, Math.max(field.min, v)) : field.def;
+      out[key] = Number.isInteger(field.step) && Number.isInteger(field.min) ? Math.round(clamped) : clamped;
+    }
   }
   return out as Infer<S>;
 }
